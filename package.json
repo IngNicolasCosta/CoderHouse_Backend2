@@ -1,0 +1,21 @@
+{
+  "name": "voley-liga-api",
+  "version": "1.0.0",
+  "description": "API REST para la gestión de un torneo de vóley con ligas, equipos e inscripciones (Backend II - CoderHouse)",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "author": "Nicolas Costa",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^18.0.5",
+    "express": "^5.2.1",
+    "mongoose": "^9.10.4"
+  }
+}
