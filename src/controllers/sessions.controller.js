@@ -1,3 +1,5 @@
+import { sessionsService } from '../services/sessions.service.js'
+
 const notImplemented = (res, feature) => {
   res.status(501).json({
     status: 'error',
@@ -5,7 +7,10 @@ const notImplemented = (res, feature) => {
   })
 }
 
-export const register = (req, res) => notImplemented(res, 'El registro de usuarios')
+export const register = async (req, res) => {
+  const user = await sessionsService.register(req.body)
+  res.status(201).json({ status: 'success', payload: user })
+}
 
 export const login = (req, res) => notImplemented(res, 'El login')
 

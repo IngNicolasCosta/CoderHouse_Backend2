@@ -10,7 +10,7 @@
   <nav class="navbar navbar-dark bg-primary">
     <div class="container">
       <span class="navbar-brand fw-bold">🏐 Liga de Vóley API</span>
-      <span class="badge text-bg-light">Pre-entrega 1</span>
+      <span class="badge text-bg-light">Pre-entrega 2</span>
     </div>
   </nav>
 
@@ -39,7 +39,7 @@
               <tbody>
                 <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/health</code></td><td>Activa</td></tr>
                 <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/events</code></td><td>Activa</td></tr>
-                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/register</code></td><td>Pendiente (501)</td></tr>
+                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/register</code></td><td>Activa</td></tr>
                 <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/login</code></td><td>Pendiente (501)</td></tr>
                 <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/sessions/current</code></td><td>Pendiente (501)</td></tr>
                 <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/logout</code></td><td>Pendiente (501)</td></tr>
@@ -61,23 +61,74 @@
           </div>
         </div>
       </div>
+
+      <div class="col-lg-7">
+        <div class="card shadow-sm h-100">
+          <div class="card-header fw-semibold">Registro de jugador</div>
+          <div class="card-body">
+            <form id="register-form" class="row g-3" novalidate>
+              <div class="col-sm-6">
+                <label for="first_name" class="form-label">Nombre</label>
+                <input type="text" class="form-control" id="first_name" name="first_name">
+              </div>
+              <div class="col-sm-6">
+                <label for="last_name" class="form-label">Apellido</label>
+                <input type="text" class="form-control" id="last_name" name="last_name">
+              </div>
+              <div class="col-12">
+                <label for="email" class="form-label">Email</label>
+                <input type="email" class="form-control" id="email" name="email">
+              </div>
+              <div class="col-12">
+                <label for="password" class="form-label">Contraseña</label>
+                <input type="password" class="form-control" id="password" name="password" aria-describedby="password-help">
+                <div id="password-help" class="form-text">Mínimo 8 caracteres.</div>
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-success">POST /api/sessions/register</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-5">
+        <div class="card shadow-sm h-100">
+          <div class="card-header fw-semibold">Respuesta del registro</div>
+          <div class="card-body">
+            <pre id="register-response" class="bg-dark text-light rounded p-3 small mb-0">Completá el formulario y enviá</pre>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 
   <script>
+    const showResponse = async (output, request) => {
+      output.textContent = 'Cargando...'
+      try {
+        const res = await request
+        const data = await res.json()
+        output.textContent = `${res.status} ${res.statusText}\n\n${JSON.stringify(data, null, 2)}`
+      } catch (error) {
+        output.textContent = `Error: ${error.message}`
+      }
+    }
+
     const output = document.getElementById('response')
 
     document.querySelectorAll('[data-endpoint]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        output.textContent = 'Cargando...'
-        try {
-          const res = await fetch(button.dataset.endpoint)
-          const data = await res.json()
-          output.textContent = `${res.status} ${res.statusText}\n\n${JSON.stringify(data, null, 2)}`
-        } catch (error) {
-          output.textContent = `Error: ${error.message}`
-        }
-      })
+      button.addEventListener('click', () => showResponse(output, fetch(button.dataset.endpoint)))
+    })
+
+    document.getElementById('register-form').addEventListener('submit', (event) => {
+      event.preventDefault()
+      const body = Object.fromEntries(new FormData(event.target))
+      showResponse(document.getElementById('register-response'), fetch('/api/sessions/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }))
     })
   </script>
 </body>

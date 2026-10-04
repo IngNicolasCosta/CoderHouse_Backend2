@@ -32,6 +32,7 @@ Cómo se relacionan las entidades del curso con la temática:
 - Node.js (ESM: `import` / `export`)
 - Express 5
 - MongoDB + Mongoose
+- bcrypt (hash de contraseñas)
 - dotenv
 - Bootstrap 5 (página de inicio)
 
@@ -57,6 +58,7 @@ cp .env.example .env
 | `NODE_ENV`   | Entorno de ejecución                          | `development` |
 | `MONGO_URL`  | Cadena de conexión a MongoDB (Atlas o local)  | `mongodb://localhost:27017/voley-liga` |
 | `JWT_SECRET` | Secreto para firmar tokens JWT (próximas entregas) | `un_secreto_largo` |
+| `BCRYPT_SALT_ROUNDS` | Costo del hash de contraseñas (opcional, por defecto `10`) | `10` |
 
 > El servidor necesita `MONGO_URL` para iniciar: si falta o la conexión falla, se detiene mostrando el error.
 
@@ -91,18 +93,25 @@ CoderHouse_Backend2/
 │   │   ├── events.controller.js
 │   │   └── sessions.controller.js
 │   ├── services/
-│   │   └── events.service.js
+│   │   ├── events.service.js
+│   │   └── sessions.service.js     # reglas de negocio del registro
 │   ├── repositories/
-│   │   └── events.repository.js
+│   │   ├── events.repository.js
+│   │   └── users.repository.js
 │   ├── dao/
-│   │   └── events.dao.js
+│   │   ├── events.dao.js
+│   │   └── users.dao.js
 │   ├── models/
 │   │   ├── User.js
 │   │   └── Event.js
 │   ├── middlewares/
 │   │   ├── notFound.middleware.js
-│   │   └── errorHandler.middleware.js
+│   │   ├── errorHandler.middleware.js
+│   │   └── validateRegister.middleware.js   # validación de entrada del registro
 │   ├── utils/
+│   │   ├── hash.js             # createHash / isValidPassword (bcrypt)
+│   │   ├── validators.js       # validación y normalización de email
+│   │   └── errors.js           # AppError con código HTTP
 │   └── public/
 │       └── index.html          # página de inicio (Bootstrap)
 ├── .env.example
@@ -114,7 +123,7 @@ CoderHouse_Backend2/
 Flujo de una petición:
 
 ```
-Cliente → Router → Controller → Service → Repository → DAO → Model (MongoDB)
+Cliente → Router → Middleware → Controller → Service → Repository → DAO → Model (MongoDB)
 ```
 
 ## Rutas disponibles
@@ -124,7 +133,7 @@ Cliente → Router → Controller → Service → Repository → DAO → Model (
 | GET    | `/`                       | Página de inicio                    | ✅ |
 | GET    | `/api/health`             | Estado del servidor                 | ✅ |
 | GET    | `/api/events`             | Listado de torneos                  | ✅ |
-| POST   | `/api/sessions/register`  | Registro de usuario                 | 🚧 `501` |
+| POST   | `/api/sessions/register`  | Registro de usuario                 | ✅ |
 | POST   | `/api/sessions/login`     | Login                               | 🚧 `501` |
 | GET    | `/api/sessions/current`   | Usuario autenticado actual          | 🚧 `501` |
 | POST   | `/api/sessions/logout`    | Logout                              | 🚧 `501` |
@@ -143,14 +152,82 @@ Cliente → Router → Controller → Service → Repository → DAO → Model (
 { "status": "success", "payload": [] }
 ```
 
+## Registro de usuarios
+
+`POST /api/sessions/register`
+
+### Campos que espera (body JSON)
+
+| Campo        | Tipo   | Obligatorio | Reglas |
+|--------------|--------|:-----------:|--------|
+| `first_name` | string | ✅ | No puede estar vacío |
+| `last_name`  | string | ✅ | No puede estar vacío |
+| `email`      | string | ✅ | Formato de email válido. Se guarda normalizado (sin espacios y en minúsculas) |
+| `password`   | string | ✅ | Mínimo 8 caracteres. Se guarda hasheada con bcrypt |
+
+- El `role` **no se puede elegir** desde el registro público: siempre se crea como `user`, aunque el body traiga otro valor.
+- La respuesta **nunca incluye la contraseña**, ni en texto plano ni hasheada.
+
+### Respuestas
+
+`201` – usuario creado:
+
+```json
+{ "status": "success", "payload": { "id": "665f2a...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com", "role": "user" } }
+```
+
+`400` – datos inválidos (uno de estos mensajes):
+
+```json
+{ "status": "error", "message": "Faltan campos obligatorios" }
+{ "status": "error", "message": "El formato del email es inválido" }
+{ "status": "error", "message": "La contraseña debe tener al menos 8 caracteres" }
+```
+
+`409` – email ya registrado:
+
+```json
+{ "status": "error", "message": "El email ya está registrado" }
+```
+
+### Cómo probarlo
+
+**Desde la página de inicio:** con el servidor levantado, en `http://localhost:8080/` hay un formulario de registro que muestra la respuesta del endpoint.
+
+**Con Postman / Insomnia:** `POST http://localhost:8080/api/sessions/register` con body *raw → JSON*:
+
+```json
+{ "first_name": "Ana", "last_name": "Pérez", "email": "Ana@Mail.com ", "password": "Secreta123" }
+```
+
+**Con curl:**
+
+```bash
+curl -X POST http://localhost:8080/api/sessions/register -H "Content-Type: application/json" -d "{\"first_name\":\"Ana\",\"last_name\":\"Pérez\",\"email\":\"Ana@Mail.com \",\"password\":\"Secreta123\"}"
+```
+
+### Casos probados
+
+| # | Caso | Resultado esperado |
+|---|------|--------------------|
+| 1 | Registro exitoso | `201`, email normalizado, `role: "user"`, sin `password` |
+| 2 | Campos faltantes o vacíos | `400` – Faltan campos obligatorios |
+| 3 | Email con formato inválido | `400` – El formato del email es inválido |
+| 4 | Email ya registrado (aunque cambien mayúsculas/minúsculas) | `409` – El email ya está registrado |
+| 5 | Contraseña en la base de datos | Hash bcrypt (`$2b$10$...`), nunca texto plano |
+| 6 | Respuesta del endpoint | No incluye el campo `password` |
+| + | Body con `"role": "admin"` | Se ignora: el usuario se crea como `user` |
+
 ## Entregas
 
 | # | Entrega | Estado |
 |---|---------|--------|
 | 1 | Refactor arquitectónico inicial | ✅ |
-| 2 | Registro seguro de usuarios | ⏳ |
+| 2 | Registro seguro de usuarios | ✅ |
 | 3 | Autenticación con JWT y cookies | ⏳ |
 | 4 | Autenticación centralizada con Passport | ⏳ |
 | 5 | Roles y autorización | ⏳ |
 | 6 | Entidad events y lógica de negocio | ⏳ |
 | 7 | Tickets, inscripciones y control de cupos | ⏳ |
+
+Cada entrega está marcada con un tag de git (`pre-entrega-1`, `pre-entrega-2`, …) para poder ver el código tal como quedó en cada etapa.
