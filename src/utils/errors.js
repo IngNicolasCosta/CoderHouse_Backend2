@@ -18,5 +18,8 @@ export const ERROR_MESSAGES = {
   eventNotFound: 'Evento no encontrado',
   userNotFound: 'Usuario no encontrado',
   invalidRole: 'El rol indicado no es válido',
-  ownRoleChange: 'No podés cambiar tu propio rol'
+  ownRoleChange: 'No podés cambiar tu propio rol',
+  ticketNotFound: 'Inscripción no encontrada',
+  ticketForbidden: 'No tenés permisos para cancelar esta inscripción',
+  duplicateTicket: 'Ya tenés una inscripción activa a este evento'
 }

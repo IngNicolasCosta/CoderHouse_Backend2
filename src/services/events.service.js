@@ -1,5 +1,6 @@
 import mongoose from 'mongoose'
 import { eventsRepository } from '../repositories/events.repository.js'
+import { ticketsRepository } from '../repositories/tickets.repository.js'
 import {
   EVENT_CATEGORIES,
   EVENT_SORT_FIELDS,
@@ -200,7 +201,8 @@ class EventsService {
     return toEventResponse(event)
   }
 
-  // Los borradores no son públicos: solo los ve su organizer o un admin
+  // Los borradores no son públicos: solo los ve su organizer o un admin.
+  // El detalle incluye los cupos disponibles, calculados con los tickets activos
   async getVisibleEvent (id, viewer) {
     const event = await this.findEventOrFail(id)
 
@@ -208,7 +210,8 @@ class EventsService {
       throw new AppError(ERROR_MESSAGES.eventNotFound, 404)
     }
 
-    return event
+    const occupied = await ticketsRepository.getOccupiedSeats(event.id)
+    return { ...event, availableSeats: Math.max(event.capacity - occupied, 0) }
   }
 
   async createEvent (input = {}, organizerId) {
@@ -232,7 +235,16 @@ class EventsService {
       throw badRequest('El estado se cambia con PATCH /api/events/:id/status')
     }
 
-    const updated = await this.repository.update(event.id, buildEventData(input, { partial: true }))
+    const data = buildEventData(input, { partial: true })
+
+    if (data.capacity !== undefined) {
+      const occupied = await ticketsRepository.getOccupiedSeats(event.id)
+      if (data.capacity < occupied) {
+        throw conflict(`La capacidad no puede ser menor a los cupos ya ocupados (${occupied})`)
+      }
+    }
+
+    const updated = await this.repository.update(event.id, data)
     return toEventResponse(updated)
   }
 

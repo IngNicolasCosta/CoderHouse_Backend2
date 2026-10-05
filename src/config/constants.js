@@ -17,6 +17,16 @@ export const EVENT_STATUS_TRANSITIONS = {
   [EVENT_STATUS.FINISHED]: []
 }
 
+// pending: reserva recién creada, mientras se verifica el cupo; confirmed: inscripción confirmada
+export const TICKET_STATUS = {
+  PENDING: 'pending',
+  CONFIRMED: 'confirmed',
+  CANCELLED: 'cancelled'
+}
+
+// Solo los tickets activos ocupan cupo; los cancelados no se cuentan
+export const ACTIVE_TICKET_STATUSES = [TICKET_STATUS.PENDING, TICKET_STATUS.CONFIRMED]
+
 export const EVENT_SORT_FIELDS = ['date', 'price', 'title', 'capacity', 'createdAt']
 
 export const PAGINATION = {

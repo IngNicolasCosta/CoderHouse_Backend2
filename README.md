@@ -36,6 +36,7 @@ Cómo se relacionan las entidades del curso con la temática:
 - Passport.js (`passport-local` y `passport-jwt`)
 - jsonwebtoken (JWT)
 - cookie-parser (cookie de autenticación)
+- Nodemailer (email de confirmación de inscripción)
 - dotenv
 - Bootstrap 5 (página de inicio)
 
@@ -63,6 +64,11 @@ cp .env.example .env
 | `JWT_SECRET`         | Clave para firmar los JWT (larga y aleatoria)        | ✅ | `un_secreto_largo_y_aleatorio` |
 | `JWT_EXPIRES_IN`     | Duración del token                                   | No (`1h`) | `1h` |
 | `BCRYPT_SALT_ROUNDS` | Costo del hash de contraseñas                        | No (`10`) | `10` |
+| `MAIL_HOST`          | Servidor SMTP para los emails                        | No (sin él no se envían emails) | `smtp.gmail.com` |
+| `MAIL_PORT`          | Puerto SMTP                                          | No (`587`) | `587` |
+| `MAIL_USER`          | Usuario SMTP                                         | No | `tu_cuenta@gmail.com` |
+| `MAIL_PASS`          | Contraseña SMTP (en Gmail, contraseña de aplicación) | No | `abcd efgh ijkl mnop` |
+| `MAIL_FROM`          | Remitente de los emails                              | No (`MAIL_USER`) | `"Liga de Vóley <tu_cuenta@gmail.com>"` |
 
 > Si falta `MONGO_URL` o `JWT_SECRET`, o no se puede conectar a la base, el servidor no arranca y muestra el error.
 
@@ -96,36 +102,44 @@ CoderHouse_Backend2/
 │   ├── server.js               # valida el entorno, conecta la base y levanta el servidor
 │   ├── config/
 │   │   ├── config.js           # variables de entorno (dotenv) y opciones de la cookie
-│   │   ├── constants.js        # estados, ligas, transiciones de estado y paginación de eventos
+│   │   ├── constants.js        # estados de eventos y tickets, ligas, transiciones y paginación
 │   │   ├── database.js         # conexión a MongoDB
+│   │   ├── mailer.config.js    # transporter de Nodemailer (credenciales desde el .env)
 │   │   ├── passport.config.js  # estrategias de Passport: register, login y current
 │   │   └── permissions.js      # roles y matriz de permisos
 │   ├── routes/
 │   │   ├── health.router.js
 │   │   ├── events.router.js    # rutas de eventos protegidas con authenticate + authorizeRoles
 │   │   ├── sessions.router.js
-│   │   └── users.router.js     # rutas administrativas (solo admin)
+│   │   ├── users.router.js     # rutas administrativas (solo admin)
+│   │   └── tickets.router.js   # my-tickets y cancelación de inscripciones
 │   ├── controllers/
 │   │   ├── health.controller.js
 │   │   ├── events.controller.js
 │   │   ├── sessions.controller.js
-│   │   └── users.controller.js
+│   │   ├── users.controller.js
+│   │   └── tickets.controller.js
 │   ├── services/
 │   │   ├── events.service.js       # reglas de negocio de torneos, filtros y paginación
 │   │   ├── sessions.service.js     # reglas de negocio: alta de usuario, credenciales, usuario de la sesión
-│   │   └── users.service.js        # listado de usuarios y cambio de rol
+│   │   ├── users.service.js        # listado de usuarios y cambio de rol
+│   │   ├── tickets.service.js      # inscripciones: validaciones, cupos y cancelación
+│   │   └── mail.service.js         # email de confirmación de inscripción
 │   ├── repositories/
 │   │   ├── events.repository.js
-│   │   └── users.repository.js
+│   │   ├── users.repository.js
+│   │   └── tickets.repository.js
 │   ├── dao/
 │   │   ├── events.dao.js
-│   │   └── users.dao.js
+│   │   ├── users.dao.js
+│   │   └── tickets.dao.js
 │   ├── models/
 │   │   ├── User.js
-│   │   └── Event.js
+│   │   ├── Event.js
+│   │   └── Ticket.js
 │   ├── middlewares/
 │   │   ├── auth.middleware.js      # authenticate (401), optionalAuthenticate y passportCall
-│   │   ├── authorize.middleware.js # authorizeRoles (403) y authorizeEventOwnerOrAdmin
+│   │   ├── authorize.middleware.js # authorizeRoles (403), authorizeEventOwnerOrAdmin y authorizeTicketOwnerOrAdmin
 │   │   ├── notFound.middleware.js
 │   │   └── errorHandler.middleware.js
 │   ├── scripts/
@@ -134,7 +148,8 @@ CoderHouse_Backend2/
 │   │   ├── hash.js             # createHash / isValidPassword (bcrypt)
 │   │   ├── jwt.js              # generateToken (lo usa el controller de login)
 │   │   ├── validators.js       # validación de datos de registro/login y normalización de email
-│   │   └── errors.js           # AppError con código HTTP y mensajes de error
+│   │   ├── errors.js           # AppError con código HTTP y mensajes de error
+│   │   └── codes.js            # generador de códigos de reserva
 │   └── public/
 │       └── index.html          # página de inicio (Bootstrap)
 ├── .env.example
@@ -173,6 +188,10 @@ Cliente → Router → passportCall('register' | 'login' | 'current') → Strate
 | POST   | `/api/sessions/logout`        | Cierra la sesión borrando la cookie           | Pública |
 | GET    | `/api/users`                  | Listado de todos los usuarios                 | 🔒 `admin` |
 | PATCH  | `/api/users/:uid/role`        | Cambiar el rol de un usuario                  | 🔒 `admin` |
+| POST   | `/api/events/:eid/tickets`    | Inscribirse a un torneo                       | 🔒 cualquier usuario con sesión |
+| GET    | `/api/events/:eid/tickets`    | Inscriptos de un torneo y resumen de cupos    | 🔒 dueño (`organizer`) o `admin` |
+| GET    | `/api/tickets/my-tickets`     | Mis inscripciones                             | 🔒 cualquier usuario con sesión |
+| PATCH  | `/api/tickets/:tid/cancel`    | Cancelar una inscripción                      | 🔒 dueño del ticket o `admin` |
 
 Todas las respuestas tienen el formato `{ "status": "success" | "error", ... }`. Una ruta inexistente devuelve `404`.
 
@@ -241,7 +260,7 @@ Un parámetro inválido (estado o liga inexistentes, `page=0`, fecha mal escrita
 
 ### `GET /api/events/:id`
 
-Pública. Devuelve el torneo en `payload` (`200`). Si no existe, si el id es inválido, o si es un borrador y quien consulta no es su dueño ni un admin → `404`:
+Pública. Devuelve el torneo en `payload` (`200`), con `availableSeats` (cupos disponibles calculados con las inscripciones activas). Si no existe, si el id es inválido, o si es un borrador y quien consulta no es su dueño ni un admin → `404`:
 
 ```json
 { "status": "error", "message": "Evento no encontrado" }
@@ -332,6 +351,7 @@ Todas las reglas viven en la capa de servicios ([`events.service.js`](src/servic
 
 - No se puede crear (ni mover) un torneo a una **fecha pasada**.
 - `capacity` tiene que ser un entero **mayor a 0** y `price` **mayor o igual a 0**.
+- La `capacity` no puede bajar por debajo de los cupos ya ocupados por inscripciones activas (`409`).
 - Un torneo nuevo solo puede crearse como `draft` o `published`.
 - **No se puede publicar** un torneo **cancelado o finalizado**, ni uno cuya fecha ya pasó.
 - Los torneos **cancelados o finalizados no se pueden modificar**: son estados finales para conservar el historial tal como quedó. Si hay que cambiar algo, se crea un torneo nuevo.
@@ -342,6 +362,146 @@ Todas las reglas viven en la capa de servicios ([`events.service.js`](src/servic
 - Los textos de búsqueda (`location`, `search`) se escapan antes de armar la expresión regular, así un texto con caracteres especiales no puede romper ni trabar la consulta.
 
 Códigos de error: `400` datos o parámetros inválidos, `401` sin sesión, `403` sin permiso, `404` torneo inexistente, `409` la acción choca con el estado actual del torneo.
+
+## Inscripciones (tickets)
+
+Un **ticket** es la inscripción de un usuario a un torneo. Relaciona `User` con `Event` usando **referencias** (ObjectId), nunca objetos embebidos.
+
+### Modelo `Ticket`
+
+| Campo             | Tipo     | Descripción |
+|-------------------|----------|-------------|
+| `user`            | ObjectId | Referencia al `User` que se inscribió (sale de `req.user`) |
+| `event`           | ObjectId | Referencia al `Event` |
+| `status`          | string   | `pending`, `confirmed` o `cancelled` |
+| `quantity`        | number   | Cupos que reserva (entero mayor a 0, por defecto `1`) |
+| `reservationCode` | string   | Código único de reserva, por ejemplo `VOL-7QK2MX` |
+| `createdAt`       | fecha    | Fecha de la inscripción (automática) |
+| `cancelledAt`     | fecha    | Fecha de cancelación (`null` mientras esté activo) |
+
+### Estados
+
+| Estado      | Significado | ¿Ocupa cupo? |
+|-------------|-------------|:------------:|
+| `pending`   | Reserva recién creada, mientras se verifica que el cupo alcance (dura milisegundos) | ✅ |
+| `confirmed` | Inscripción confirmada: se envía el email | ✅ |
+| `cancelled` | Inscripción cancelada. El documento **no se borra**: queda con `cancelledAt` | ❌ |
+
+### Rutas
+
+| Método | Ruta                          | Acceso | Descripción |
+|--------|-------------------------------|--------|-------------|
+| POST   | `/api/events/:eid/tickets`    | 🔒 cualquier usuario con sesión | Inscribirse a un torneo |
+| GET    | `/api/tickets/my-tickets`     | 🔒 cualquier usuario con sesión | Mis inscripciones, con los datos del torneo |
+| GET    | `/api/events/:eid/tickets`    | 🔒 `organizer` dueño del torneo o `admin` | Inscriptos de un torneo y resumen de cupos |
+| PATCH  | `/api/tickets/:tid/cancel`    | 🔒 dueño del ticket o `admin` | Cancelar una inscripción |
+
+#### `POST /api/events/:eid/tickets`
+
+Request (el body es opcional; `quantity` vale `1` por defecto):
+
+```json
+{ "quantity": 1 }
+```
+
+Response `201`:
+
+```json
+{ "status": "success", "payload": { "id": "66a1...", "event": "6690...", "user": "665f...", "quantity": 1, "status": "confirmed", "reservationCode": "VOL-7QK2MX", "createdAt": "2026-10-05T14:00:00.000Z", "cancelledAt": null } }
+```
+
+Errores:
+
+| Código | Caso | Mensaje |
+|--------|------|---------|
+| `400` | `quantity` no es un entero mayor a 0 | `La cantidad debe ser un número entero mayor a 0` |
+| `401` | Sin sesión | `No autenticado` |
+| `404` | El torneo no existe (o es un borrador ajeno) | `Evento no encontrado` |
+| `409` | Torneo cancelado | `No es posible inscribirse a un evento cancelado` |
+| `409` | Torneo finalizado | `No es posible inscribirse a un evento finalizado` |
+| `409` | Torneo en borrador o con fecha pasada | `El evento no está disponible para inscripciones` / `No es posible inscribirse a un evento que ya ocurrió` |
+| `409` | Ya tiene una inscripción activa a ese torneo | `Ya tenés una inscripción activa a este evento` |
+| `409` | No alcanza el cupo | `No hay cupos suficientes: quedan 2 y pediste 3` / `No quedan cupos disponibles para este evento` |
+
+#### `GET /api/tickets/my-tickets`
+
+Devuelve solo los tickets del usuario autenticado (activos y cancelados), con los datos básicos del torneo vía `populate`. No incluye datos de otros usuarios.
+
+```json
+{ "status": "success", "payload": [ { "id": "66a1...", "event": { "id": "6690...", "title": "Torneo Apertura", "date": "2026-11-15T10:00:00.000Z", "location": "Club Ferro", "category": "A-femenino", "status": "published" }, "user": "665f...", "quantity": 1, "status": "confirmed", "reservationCode": "VOL-7QK2MX", "createdAt": "...", "cancelledAt": null } ] }
+```
+
+#### `GET /api/events/:eid/tickets` 🔒 dueño o admin
+
+Lista los inscriptos del torneo (con nombre y email, nunca la contraseña) y un resumen de cupos:
+
+```json
+{ "status": "success", "payload": [ { "id": "66a1...", "user": { "id": "665f...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com" }, "quantity": 1, "status": "confirmed", "...": "..." } ], "summary": { "capacity": 12, "occupied": 7, "available": 5 } }
+```
+
+Un `user` recibe `403` (`No tenés permisos para realizar esta acción`). Un `organizer` que no es dueño del torneo también recibe `403` (`No tenés permisos para modificar este evento`).
+
+#### `PATCH /api/tickets/:tid/cancel` 🔒 dueño del ticket o admin
+
+Cambia el `status` a `cancelled` y registra `cancelledAt`. **No borra el documento.** Response `200` con el ticket actualizado.
+
+| Código | Caso | Mensaje |
+|--------|------|---------|
+| `403` | El ticket es de otro usuario (y no es admin) | `No tenés permisos para cancelar esta inscripción` |
+| `404` | El ticket no existe | `Inscripción no encontrada` |
+| `409` | Ya estaba cancelado | `La inscripción ya está cancelada` |
+| `409` | El torneo ya ocurrió | `No se puede cancelar una inscripción de un evento que ya ocurrió` |
+
+### Flujo de inscripción
+
+Todas las validaciones están en [`tickets.service.js`](src/services/tickets.service.js), no en el controller ni en la ruta:
+
+1. `authenticate` valida la sesión (`401`).
+2. Se valida `quantity` (entero mayor a 0).
+3. El torneo existe (`404`) y está `published`, no cancelado ni finalizado, y con fecha futura (`409`).
+4. El usuario no tiene otro ticket activo para ese torneo (`409`). La regla es **una inscripción activa por usuario y torneo**; para reservar más lugares se usa `quantity`.
+5. Hay cupo suficiente: `cupos disponibles ≥ quantity` (`409`).
+6. Se crea el ticket como `pending` con un `reservationCode` único y se vuelve a verificar el cupo (ver abajo).
+7. Pasa a `confirmed` y se envía el **email de confirmación**.
+
+### Regla de cupos
+
+```
+cupos ocupados   = suma de quantity de los tickets del torneo con status pending o confirmed
+cupos disponibles = capacity − cupos ocupados
+```
+
+- Los tickets **`cancelled` no se cuentan**, así que **al cancelar, el cupo queda libre automáticamente** y otra persona se puede inscribir.
+- El cupo se calcula siempre a partir de los tickets. No hay un contador aparte que se pueda desincronizar.
+- `GET /api/events/:id` incluye `availableSeats` con los cupos disponibles.
+- Un torneo no puede bajar su `capacity` por debajo de los cupos ya ocupados (`409`).
+
+**Inscripciones simultáneas:** si quedan 2 lugares y 10 personas se inscriben en el mismo instante, todas podrían ver "hay lugar". Para evitar la sobreventa:
+
+- **Cupo:** el ticket se crea primero como `pending` y después se suman los cupos de las reservas hechas **hasta ese ticket inclusive**. Si esa suma supera la capacidad, el ticket se cancela y se responde `409`. Si no, pasa a `confirmed`. Así se confirman las primeras reservas y nunca se supera la capacidad.
+- **Duplicados:** un índice único parcial en MongoDB (`user + event`, solo para tickets activos) impide que el mismo usuario tenga dos inscripciones activas, aunque mande varias a la vez (doble clic).
+
+Probado con 10 inscripciones simultáneas a un torneo de cupo 3: se confirmaron exactamente 3 y las otras 7 recibieron `409`.
+
+### Email de confirmación (Nodemailer)
+
+Al confirmar una inscripción se envía un email al usuario con el torneo, la liga, la fecha, la sede, los cupos y el código de reserva. El envío se hace en segundo plano: si el servidor de correo falla, la inscripción queda confirmada igual y el error se registra en la consola.
+
+Las credenciales se leen **solo de variables de entorno** (nunca están en el código):
+
+| Variable    | Descripción | Ejemplo |
+|-------------|-------------|---------|
+| `MAIL_HOST` | Servidor SMTP | `smtp.gmail.com` |
+| `MAIL_PORT` | Puerto (`587` STARTTLS, `465` SSL) | `587` |
+| `MAIL_USER` | Usuario SMTP | `tu_cuenta@gmail.com` |
+| `MAIL_PASS` | Contraseña SMTP (en Gmail, una contraseña de aplicación) | `abcd efgh ijkl mnop` |
+| `MAIL_FROM` | Remitente que ve el usuario | `"Liga de Vóley <tu_cuenta@gmail.com>"` |
+
+Si `MAIL_HOST` está vacío, la API funciona igual y solo omite los emails (avisa en la consola).
+
+**Gmail:** activá la verificación en dos pasos y creá una contraseña de aplicación en [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords). Esa contraseña de 16 letras va en `MAIL_PASS`; la contraseña normal de Gmail no funciona.
+
+**Para probar sin una casilla real:** [Ethereal](https://ethereal.email) crea casillas de prueba gratis. Los emails no llegan a nadie, pero se ven en su web, y la consola del servidor muestra el link de vista previa de cada envío.
 
 ## Sesiones y usuarios
 
@@ -500,6 +660,12 @@ El **registro público siempre crea `user`**: si el body trae `"role": "admin"` 
 | Modificar / cancelar cualquier torneo | ❌ | ❌ | ✅ | ídem |
 | Ver todos los usuarios              | ❌ | ❌ | ✅ | `GET /api/users` |
 | Cambiar el rol de un usuario        | ❌ | ❌ | ✅ | `PATCH /api/users/:uid/role` |
+| Inscribirse a un torneo             | ✅ | ✅ | ✅ | `POST /api/events/:eid/tickets` |
+| Ver mis inscripciones               | ✅ | ✅ | ✅ | `GET /api/tickets/my-tickets` |
+| Cancelar mi inscripción             | ✅ | ✅ | ✅ | `PATCH /api/tickets/:tid/cancel` |
+| Cancelar la inscripción de otro     | ❌ | ❌ | ✅ | ídem |
+| Ver inscriptos de mis torneos       | ❌ | ✅ | ✅ | `GET /api/events/:eid/tickets` |
+| Ver inscriptos de cualquier torneo  | ❌ | ❌ | ✅ | ídem |
 
 La matriz vive en código en [`src/config/permissions.js`](src/config/permissions.js). Las rutas usan esas listas en lugar de escribir los roles a mano:
 
@@ -611,6 +777,16 @@ Para un provider nuevo alcanza con crear su estrategia en ese archivo, sumarla a
 5. Login como organizador → `POST /api/events` → `201`. `GET /api/users` → `403`.
 6. Con otro organizer, `PUT /api/events/<id>` de un torneo ajeno → `403`.
 
+**Inscripciones:**
+
+1. Como organizador, crear un torneo publicado con `capacity: 2` y copiar su `id`.
+2. Como jugadora, `POST /api/events/<id>/tickets` → `201` y llega el email de confirmación.
+3. Repetir el mismo POST → `409` (inscripción duplicada).
+4. Con otro usuario, `POST` con `{ "quantity": 2 }` → `409` (queda 1 cupo).
+5. `GET /api/tickets/my-tickets` → se ve el ticket con los datos del torneo.
+6. Como organizador, `GET /api/events/<id>/tickets` → inscriptos y `summary` de cupos. Como jugadora → `403`.
+7. Como jugadora, `PATCH /api/tickets/<ticketId>/cancel` → `200`, y el cupo vuelve a estar disponible.
+
 **Con curl:** `-c` guarda la cookie en un archivo y `-b` la envía.
 
 ```bash
@@ -666,6 +842,24 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | `?location=(a+)+$` (regex maliciosa) | `200`: se busca como texto literal |
 | Torneo inexistente o id inválido | `404` – Evento no encontrado |
 | Borrador por id: anónimo u otro organizer / dueño o admin | `404` / `200` |
+| Inscripción exitosa | `201`, ticket `confirmed` con `reservationCode` y email recibido |
+| Inscripción sin sesión | `401` |
+| Inscripción a torneo inexistente | `404` |
+| Inscripción a torneo cancelado / finalizado / borrador | `409` / `409` / `404` (o `409` si es el dueño) |
+| Inscripción sin cupo suficiente | `409` – No hay cupos suficientes: quedan 2 y pediste 3 |
+| Inscripción duplicada activa | `409` – Ya tenés una inscripción activa a este evento |
+| `quantity` 0, decimal o texto | `400` |
+| Cancelación propia → otro usuario se inscribe en ese cupo | `200` → `201` |
+| Volver a inscribirse después de cancelar | `201` |
+| Cancelar un ticket ajeno como `user` | `403` – No tenés permisos para cancelar esta inscripción |
+| `admin` cancela un ticket ajeno | `200`, con `cancelledAt`, y el documento sigue en la base |
+| Cancelar un ticket ya cancelado / inexistente | `409` / `404` |
+| `GET /api/events/:eid/tickets` como `user` / organizer de otro torneo | `403` / `403` |
+| `GET /api/events/:eid/tickets` como dueño o admin | `200` con inscriptos (sin `password`) y `summary` de cupos |
+| `GET /api/tickets/my-tickets` | `200`, solo los propios, con título, fecha y sede del torneo |
+| Bajar la `capacity` de un torneo por debajo de lo ocupado | `409` |
+| 10 inscripciones simultáneas a un torneo con cupo 3 | 3 × `201` y 7 × `409`: nunca se supera el cupo |
+| El mismo usuario manda 5 inscripciones simultáneas | 1 × `201` y 4 × `409`: un solo ticket activo |
 
 ## Entregas
 
@@ -677,6 +871,6 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | 4 | Autenticación centralizada con Passport | ✅ |
 | 5 | Roles y autorización | ✅ |
 | 6 | Entidad events y lógica de negocio | ✅ |
-| 7 | Tickets, inscripciones y control de cupos | ⏳ |
+| 7 | Tickets, inscripciones y control de cupos | ✅ |
 
 Cada entrega está marcada con un tag de git (`pre-entrega-1`, `pre-entrega-2`, …) para poder ver el código tal como quedó en cada etapa.
