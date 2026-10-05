@@ -31,15 +31,17 @@ Cómo se relacionan las entidades del curso con la temática:
 
 - Node.js (ESM: `import` / `export`)
 - Express 5
-- MongoDB + Mongoose
+- MongoDB Atlas + Mongoose
 - bcrypt (hash de contraseñas)
+- jsonwebtoken (JWT)
+- cookie-parser (cookie de autenticación)
 - dotenv
 - Bootstrap 5 (página de inicio)
 
 ## Instalación
 
 ```bash
-git clone <url-del-repositorio>
+git clone https://github.com/IngNicolasCosta/CoderHouse_Backend2.git
 cd CoderHouse_Backend2
 npm install
 ```
@@ -52,15 +54,22 @@ Copiar `.env.example` a `.env` y completar los valores:
 cp .env.example .env
 ```
 
-| Variable     | Descripción                                   | Ejemplo |
-|--------------|-----------------------------------------------|---------|
-| `PORT`       | Puerto donde escucha el servidor              | `8080` |
-| `NODE_ENV`   | Entorno de ejecución                          | `development` |
-| `MONGO_URL`  | Cadena de conexión a MongoDB (Atlas o local)  | `mongodb://localhost:27017/voley-liga` |
-| `JWT_SECRET` | Secreto para firmar tokens JWT (próximas entregas) | `un_secreto_largo` |
-| `BCRYPT_SALT_ROUNDS` | Costo del hash de contraseñas (opcional, por defecto `10`) | `10` |
+| Variable             | Descripción                                          | Obligatoria | Ejemplo |
+|----------------------|------------------------------------------------------|:-----------:|---------|
+| `PORT`               | Puerto donde escucha el servidor                     | No (`8080`) | `8080` |
+| `NODE_ENV`           | Entorno (`development` / `production`)               | No (`development`) | `development` |
+| `MONGO_URL`          | Cadena de conexión a MongoDB (Atlas o local)         | ✅ | `mongodb+srv://usuario:password@cluster.mongodb.net/voley-liga` |
+| `JWT_SECRET`         | Clave para firmar los JWT (larga y aleatoria)        | ✅ | `un_secreto_largo_y_aleatorio` |
+| `JWT_EXPIRES_IN`     | Duración del token                                   | No (`1h`) | `1h` |
+| `BCRYPT_SALT_ROUNDS` | Costo del hash de contraseñas                        | No (`10`) | `10` |
 
-> El servidor necesita `MONGO_URL` para iniciar: si falta o la conexión falla, se detiene mostrando el error.
+> Si falta `MONGO_URL` o `JWT_SECRET`, o no se puede conectar a la base, el servidor no arranca y muestra el error.
+
+Para generar un `JWT_SECRET` aleatorio:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```
 
 ## Ejecución
 
@@ -72,7 +81,7 @@ npm run dev
 npm start
 ```
 
-Con el servidor levantado, en `http://localhost:8080/` hay una página de inicio con las rutas disponibles y botones para probar la API.
+Con el servidor levantado, en `http://localhost:8080/` hay una página de inicio con las rutas disponibles y formularios para probar registro, login, `current` y logout.
 
 ## Estructura de carpetas
 
@@ -80,9 +89,9 @@ Con el servidor levantado, en `http://localhost:8080/` hay una página de inicio
 CoderHouse_Backend2/
 ├── src/
 │   ├── app.js                  # configura Express, middlewares y rutas (NO levanta el server)
-│   ├── server.js               # conecta la base de datos y levanta el servidor
+│   ├── server.js               # valida el entorno, conecta la base y levanta el servidor
 │   ├── config/
-│   │   ├── config.js           # lectura de variables de entorno (dotenv)
+│   │   ├── config.js           # variables de entorno (dotenv) y opciones de la cookie
 │   │   └── database.js         # conexión a MongoDB
 │   ├── routes/
 │   │   ├── health.router.js
@@ -94,7 +103,7 @@ CoderHouse_Backend2/
 │   │   └── sessions.controller.js
 │   ├── services/
 │   │   ├── events.service.js
-│   │   └── sessions.service.js     # reglas de negocio del registro
+│   │   └── sessions.service.js     # reglas de negocio de registro y login
 │   ├── repositories/
 │   │   ├── events.repository.js
 │   │   └── users.repository.js
@@ -105,11 +114,14 @@ CoderHouse_Backend2/
 │   │   ├── User.js
 │   │   └── Event.js
 │   ├── middlewares/
+│   │   ├── auth.middleware.js              # lee la cookie, verifica el JWT y completa req.user
+│   │   ├── validateRegister.middleware.js  # validación de entrada del registro
+│   │   ├── validateLogin.middleware.js     # validación de entrada del login
 │   │   ├── notFound.middleware.js
-│   │   ├── errorHandler.middleware.js
-│   │   └── validateRegister.middleware.js   # validación de entrada del registro
+│   │   └── errorHandler.middleware.js
 │   ├── utils/
 │   │   ├── hash.js             # createHash / isValidPassword (bcrypt)
+│   │   ├── jwt.js              # generateToken / verifyToken
 │   │   ├── validators.js       # validación y normalización de email
 │   │   └── errors.js           # AppError con código HTTP
 │   └── public/
@@ -128,35 +140,35 @@ Cliente → Router → Middleware → Controller → Service → Repository → 
 
 ## Rutas disponibles
 
-| Método | Ruta                      | Descripción                         | Estado |
-|--------|---------------------------|-------------------------------------|--------|
-| GET    | `/`                       | Página de inicio                    | ✅ |
-| GET    | `/api/health`             | Estado del servidor                 | ✅ |
-| GET    | `/api/events`             | Listado de torneos                  | ✅ |
-| POST   | `/api/sessions/register`  | Registro de usuario                 | ✅ |
-| POST   | `/api/sessions/login`     | Login                               | 🚧 `501` |
-| GET    | `/api/sessions/current`   | Usuario autenticado actual          | 🚧 `501` |
-| POST   | `/api/sessions/logout`    | Logout                              | 🚧 `501` |
+| Método | Ruta                      | Descripción                                   | Requiere login |
+|--------|---------------------------|-----------------------------------------------|:--------------:|
+| GET    | `/`                       | Página de inicio para probar la API           | No |
+| GET    | `/api/health`             | Estado del servidor                           | No |
+| GET    | `/api/events`             | Listado de torneos                            | No |
+| POST   | `/api/sessions/register`  | Registro de usuario                           | No |
+| POST   | `/api/sessions/login`     | Login: genera el JWT y lo guarda en la cookie | No |
+| GET    | `/api/sessions/current`   | Datos del usuario autenticado                 | ✅ |
+| POST   | `/api/sessions/logout`    | Cierra la sesión borrando la cookie           | No |
 
-### Ejemplos
+Todas las respuestas tienen el formato `{ "status": "success" | "error", ... }`. Una ruta inexistente devuelve `404`.
 
-`GET /api/health` → `200`
+### `GET /api/health`
+
+Response `200`:
 
 ```json
 { "status": "ok", "message": "Servidor activo" }
 ```
 
-`GET /api/events` → `200`
+### `GET /api/events`
+
+Response `200`:
 
 ```json
 { "status": "success", "payload": [] }
 ```
 
-## Registro de usuarios
-
-`POST /api/sessions/register`
-
-### Campos que espera (body JSON)
+### `POST /api/sessions/register`
 
 | Campo        | Tipo   | Obligatorio | Reglas |
 |--------------|--------|:-----------:|--------|
@@ -168,15 +180,19 @@ Cliente → Router → Middleware → Controller → Service → Repository → 
 - El `role` **no se puede elegir** desde el registro público: siempre se crea como `user`, aunque el body traiga otro valor.
 - La respuesta **nunca incluye la contraseña**, ni en texto plano ni hasheada.
 
-### Respuestas
+Request:
 
-`201` – usuario creado:
+```json
+{ "first_name": "Ana", "last_name": "Pérez", "email": "Ana@Mail.com ", "password": "Secreta123" }
+```
+
+Response `201`:
 
 ```json
 { "status": "success", "payload": { "id": "665f2a...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com", "role": "user" } }
 ```
 
-`400` – datos inválidos (uno de estos mensajes):
+Response `400` (uno de estos mensajes):
 
 ```json
 { "status": "error", "message": "Faltan campos obligatorios" }
@@ -184,39 +200,116 @@ Cliente → Router → Middleware → Controller → Service → Repository → 
 { "status": "error", "message": "La contraseña debe tener al menos 8 caracteres" }
 ```
 
-`409` – email ya registrado:
+Response `409`:
 
 ```json
 { "status": "error", "message": "El email ya está registrado" }
 ```
 
-### Cómo probarlo
+### `POST /api/sessions/login`
 
-**Desde la página de inicio:** con el servidor levantado, en `http://localhost:8080/` hay un formulario de registro que muestra la respuesta del endpoint.
-
-**Con Postman / Insomnia:** `POST http://localhost:8080/api/sessions/register` con body *raw → JSON*:
+Request:
 
 ```json
-{ "first_name": "Ana", "last_name": "Pérez", "email": "Ana@Mail.com ", "password": "Secreta123" }
+{ "email": "ana@mail.com", "password": "Secreta123" }
 ```
 
-**Con curl:**
+Response `200` – además setea la cookie `currentUser` con el JWT:
+
+```json
+{ "status": "success", "message": "Login correcto" }
+```
+
+```
+Set-Cookie: currentUser=eyJhbGciOi...; Max-Age=3600; Path=/; HttpOnly; SameSite=Lax
+```
+
+Response `400` – falta el email o la contraseña:
+
+```json
+{ "status": "error", "message": "Email y contraseña son obligatorios" }
+```
+
+Response `401` – email inexistente **o** contraseña incorrecta (mismo mensaje en los dos casos, para no revelar qué emails están registrados):
+
+```json
+{ "status": "error", "message": "Credenciales inválidas" }
+```
+
+### `GET /api/sessions/current`
+
+Requiere la cookie `currentUser`. El navegador, Postman e Insomnia la envían solos después del login.
+
+Response `200`:
+
+```json
+{ "status": "success", "payload": { "id": "665f2a...", "email": "ana@mail.com", "role": "user" } }
+```
+
+Response `401` – sin cookie, o token inválido, manipulado o expirado:
+
+```json
+{ "status": "error", "message": "No autenticado" }
+```
+
+### `POST /api/sessions/logout`
+
+Response `200` – borra la cookie `currentUser`:
+
+```json
+{ "status": "success", "message": "Sesión cerrada" }
+```
+
+## Autenticación
+
+- **JWT:** se firma con `JWT_SECRET` (HS256) y expira según `JWT_EXPIRES_IN`. El payload tiene solo `{ id, email, role }`, nunca la contraseña.
+- **Cookie `currentUser`:**
+  - `httpOnly: true`: el JavaScript del navegador no puede leerla, lo que protege el token ante ataques XSS.
+  - `sameSite: 'lax'`: no se envía en peticiones originadas desde otros sitios (protección básica contra CSRF).
+  - `maxAge: 3600000`: dura 1 hora.
+  - `secure`: solo se activa con `NODE_ENV=production`, para que la cookie viaje únicamente por HTTPS.
+- **Middleware `auth`:** lee la cookie, verifica la firma y la expiración del token y guarda `{ id, email, role }` en `req.user`. Si algo falla, responde `401`.
+- **Login:** cuando el email no existe, igual se ejecuta una comparación bcrypt. Así el tiempo de respuesta es el mismo que con una contraseña incorrecta y tampoco se puede deducir por tiempo si un email está registrado.
+
+## Cómo probar
+
+**Desde la página de inicio:** `http://localhost:8080/` tiene los formularios de registro y login y botones para `current` y `logout`.
+
+**Con Postman / Insomnia:** guardan la cookie automáticamente después del login. Orden sugerido:
+
+1. `POST /api/sessions/register` con el body JSON de arriba → `201`
+2. `POST /api/sessions/login` → `200` (en la pestaña *Cookies* aparece `currentUser`)
+3. `GET /api/sessions/current` → `200` con `{ id, email, role }`
+4. `POST /api/sessions/logout` → `200`
+5. `GET /api/sessions/current` → `401`
+
+**Con curl:** `-c` guarda la cookie en un archivo y `-b` la envía.
 
 ```bash
-curl -X POST http://localhost:8080/api/sessions/register -H "Content-Type: application/json" -d "{\"first_name\":\"Ana\",\"last_name\":\"Pérez\",\"email\":\"Ana@Mail.com \",\"password\":\"Secreta123\"}"
+curl -X POST http://localhost:8080/api/sessions/register -H "Content-Type: application/json" -d "{\"first_name\":\"Ana\",\"last_name\":\"Pérez\",\"email\":\"ana@mail.com\",\"password\":\"Secreta123\"}"
+curl -c cookies.txt -X POST http://localhost:8080/api/sessions/login -H "Content-Type: application/json" -d "{\"email\":\"ana@mail.com\",\"password\":\"Secreta123\"}"
+curl -b cookies.txt http://localhost:8080/api/sessions/current
+curl -b cookies.txt -c cookies.txt -X POST http://localhost:8080/api/sessions/logout
+curl -b cookies.txt http://localhost:8080/api/sessions/current
 ```
 
-### Casos probados
+## Casos probados
 
-| # | Caso | Resultado esperado |
-|---|------|--------------------|
-| 1 | Registro exitoso | `201`, email normalizado, `role: "user"`, sin `password` |
-| 2 | Campos faltantes o vacíos | `400` – Faltan campos obligatorios |
-| 3 | Email con formato inválido | `400` – El formato del email es inválido |
-| 4 | Email ya registrado (aunque cambien mayúsculas/minúsculas) | `409` – El email ya está registrado |
-| 5 | Contraseña en la base de datos | Hash bcrypt (`$2b$10$...`), nunca texto plano |
-| 6 | Respuesta del endpoint | No incluye el campo `password` |
-| + | Body con `"role": "admin"` | Se ignora: el usuario se crea como `user` |
+| Caso | Resultado |
+|------|-----------|
+| Registro exitoso | `201`, email normalizado, `role: "user"`, sin `password` |
+| Registro con campos faltantes o vacíos | `400` – Faltan campos obligatorios |
+| Registro con email inválido | `400` – El formato del email es inválido |
+| Registro con email ya registrado (aunque cambien mayúsculas) | `409` – El email ya está registrado |
+| Registro con `"role": "admin"` en el body | Se ignora: el usuario se crea como `user` |
+| Contraseña en la base de datos | Hash bcrypt (`$2b$10$...`), nunca texto plano |
+| Registro → login → `current` → logout → `current` | `201` → `200` (cookie) → `200` → `200` → `401` |
+| Login con email inexistente | `401` – Credenciales inválidas |
+| Login con contraseña incorrecta | `401` – Credenciales inválidas |
+| `current` sin cookie | `401` – No autenticado |
+| `current` con token manipulado (rol cambiado a `admin`) | `401` – No autenticado |
+| `current` con token expirado | `401` – No autenticado |
+| `current` con token firmado con otra clave o con `alg: none` | `401` – No autenticado |
 
 ## Entregas
 
@@ -224,7 +317,7 @@ curl -X POST http://localhost:8080/api/sessions/register -H "Content-Type: appli
 |---|---------|--------|
 | 1 | Refactor arquitectónico inicial | ✅ |
 | 2 | Registro seguro de usuarios | ✅ |
-| 3 | Autenticación con JWT y cookies | ⏳ |
+| 3 | Autenticación con JWT y cookies | ✅ |
 | 4 | Autenticación centralizada con Passport | ⏳ |
 | 5 | Roles y autorización | ⏳ |
 | 6 | Entidad events y lógica de negocio | ⏳ |

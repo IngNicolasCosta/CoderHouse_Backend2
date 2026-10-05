@@ -4,6 +4,9 @@ node_modules/
 # Material del curso (no se versiona)
 *.pdf
 
+# Cookies guardadas al probar con curl
+cookies.txt
+
 # Logs y archivos del sistema
 npm-debug.log*
 .DS_Store

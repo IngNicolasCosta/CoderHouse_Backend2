@@ -10,7 +10,7 @@
   <nav class="navbar navbar-dark bg-primary">
     <div class="container">
       <span class="navbar-brand fw-bold">🏐 Liga de Vóley API</span>
-      <span class="badge text-bg-light">Pre-entrega 2</span>
+      <span class="badge text-bg-light">Pre-entrega 3</span>
     </div>
   </nav>
 
@@ -40,9 +40,9 @@
                 <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/health</code></td><td>Activa</td></tr>
                 <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/events</code></td><td>Activa</td></tr>
                 <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/register</code></td><td>Activa</td></tr>
-                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/login</code></td><td>Pendiente (501)</td></tr>
-                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/sessions/current</code></td><td>Pendiente (501)</td></tr>
-                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/logout</code></td><td>Pendiente (501)</td></tr>
+                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/login</code></td><td>Activa</td></tr>
+                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/sessions/current</code></td><td>Activa (requiere login)</td></tr>
+                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/logout</code></td><td>Activa</td></tr>
               </tbody>
             </table>
           </div>
@@ -53,20 +53,22 @@
         <div class="card shadow-sm h-100">
           <div class="card-header fw-semibold">Probar la API</div>
           <div class="card-body">
-            <div class="d-flex gap-2 mb-3">
-              <button class="btn btn-primary" data-endpoint="/api/health">GET /api/health</button>
-              <button class="btn btn-outline-primary" data-endpoint="/api/events">GET /api/events</button>
+            <div class="d-flex flex-wrap gap-2 mb-3">
+              <button class="btn btn-sm btn-primary" data-endpoint="/api/health">GET /api/health</button>
+              <button class="btn btn-sm btn-outline-primary" data-endpoint="/api/events">GET /api/events</button>
+              <button class="btn btn-sm btn-outline-success" data-endpoint="/api/sessions/current">GET /api/sessions/current</button>
+              <button class="btn btn-sm btn-outline-danger" data-endpoint="/api/sessions/logout" data-method="POST">POST /api/sessions/logout</button>
             </div>
             <pre id="response" class="bg-dark text-light rounded p-3 small mb-0">Elegí un endpoint para ver la respuesta</pre>
           </div>
         </div>
       </div>
 
-      <div class="col-lg-7">
+      <div class="col-lg-4">
         <div class="card shadow-sm h-100">
           <div class="card-header fw-semibold">Registro de jugador</div>
           <div class="card-body">
-            <form id="register-form" class="row g-3" novalidate>
+            <form class="row g-3" data-endpoint="/api/sessions/register" novalidate>
               <div class="col-sm-6">
                 <label for="first_name" class="form-label">Nombre</label>
                 <input type="text" class="form-control" id="first_name" name="first_name">
@@ -76,12 +78,12 @@
                 <input type="text" class="form-control" id="last_name" name="last_name">
               </div>
               <div class="col-12">
-                <label for="email" class="form-label">Email</label>
-                <input type="email" class="form-control" id="email" name="email">
+                <label for="register_email" class="form-label">Email</label>
+                <input type="email" class="form-control" id="register_email" name="email">
               </div>
               <div class="col-12">
-                <label for="password" class="form-label">Contraseña</label>
-                <input type="password" class="form-control" id="password" name="password" aria-describedby="password-help">
+                <label for="register_password" class="form-label">Contraseña</label>
+                <input type="password" class="form-control" id="register_password" name="password" aria-describedby="password-help">
                 <div id="password-help" class="form-text">Mínimo 8 caracteres.</div>
               </div>
               <div class="col-12">
@@ -92,11 +94,33 @@
         </div>
       </div>
 
-      <div class="col-lg-5">
+      <div class="col-lg-4">
         <div class="card shadow-sm h-100">
-          <div class="card-header fw-semibold">Respuesta del registro</div>
+          <div class="card-header fw-semibold">Iniciar sesión</div>
           <div class="card-body">
-            <pre id="register-response" class="bg-dark text-light rounded p-3 small mb-0">Completá el formulario y enviá</pre>
+            <form class="row g-3" data-endpoint="/api/sessions/login" novalidate>
+              <div class="col-12">
+                <label for="login_email" class="form-label">Email</label>
+                <input type="email" class="form-control" id="login_email" name="email">
+              </div>
+              <div class="col-12">
+                <label for="login_password" class="form-label">Contraseña</label>
+                <input type="password" class="form-control" id="login_password" name="password">
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-primary">POST /api/sessions/login</button>
+              </div>
+            </form>
+            <p class="form-text mt-3 mb-0">El token queda en la cookie <code>currentUser</code> (HttpOnly). Después probá <code>/current</code> y <code>/logout</code>.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-4">
+        <div class="card shadow-sm h-100">
+          <div class="card-header fw-semibold">Respuesta del formulario</div>
+          <div class="card-body">
+            <pre id="form-response" class="bg-dark text-light rounded p-3 small mb-0">Completá un formulario y enviá</pre>
           </div>
         </div>
       </div>
@@ -109,26 +133,32 @@
       try {
         const res = await request
         const data = await res.json()
-        output.textContent = `${res.status} ${res.statusText}\n\n${JSON.stringify(data, null, 2)}`
+        output.textContent = `${res.status} ${res.statusText}
+
+${JSON.stringify(data, null, 2)}`
       } catch (error) {
         output.textContent = `Error: ${error.message}`
       }
     }
 
     const output = document.getElementById('response')
+    const formOutput = document.getElementById('form-response')
 
-    document.querySelectorAll('[data-endpoint]').forEach((button) => {
-      button.addEventListener('click', () => showResponse(output, fetch(button.dataset.endpoint)))
+    document.querySelectorAll('button[data-endpoint]').forEach((button) => {
+      button.addEventListener('click', () => {
+        showResponse(output, fetch(button.dataset.endpoint, { method: button.dataset.method || 'GET' }))
+      })
     })
 
-    document.getElementById('register-form').addEventListener('submit', (event) => {
-      event.preventDefault()
-      const body = Object.fromEntries(new FormData(event.target))
-      showResponse(document.getElementById('register-response'), fetch('/api/sessions/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      }))
+    document.querySelectorAll('form[data-endpoint]').forEach((form) => {
+      form.addEventListener('submit', (event) => {
+        event.preventDefault()
+        showResponse(formOutput, fetch(form.dataset.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.fromEntries(new FormData(form)))
+        }))
+      })
     })
   </script>
 </body>

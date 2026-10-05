@@ -1,9 +1,14 @@
 import { usersRepository } from '../repositories/users.repository.js'
-import { createHash } from '../utils/hash.js'
+import { createHash, isValidPassword } from '../utils/hash.js'
+import { generateToken } from '../utils/jwt.js'
 import { AppError } from '../utils/errors.js'
 import { normalizeEmail } from '../utils/validators.js'
 
 const DUPLICATE_KEY_ERROR = 11000
+
+// Hash de una contraseña aleatoria: se compara cuando el email no existe para que
+// el tiempo de respuesta no revele si el usuario está registrado
+const DUMMY_PASSWORD_HASH = '$2b$10$Lcoc7i4TDjZadwqK/Wij5eeQM5AX0xmNNkwprgqN5gLyoKM/uk2IS'
 
 const toPublicUser = (user) => ({
   id: user._id,
@@ -42,6 +47,17 @@ class SessionsService {
       }
       throw error
     }
+  }
+
+  async login ({ email, password }) {
+    const user = await this.repository.getByEmail(normalizeEmail(email))
+    const passwordMatches = await isValidPassword(password, user?.password ?? DUMMY_PASSWORD_HASH)
+
+    if (!user || !passwordMatches) {
+      throw new AppError('Credenciales inválidas', 401)
+    }
+
+    return generateToken({ id: user._id.toString(), email: user.email, role: user.role })
   }
 }
 
