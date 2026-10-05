@@ -1,8 +1,7 @@
-import mongoose from 'mongoose'
 import { validateEnv } from '../config/config.js'
-import { connectDB } from '../config/database.js'
+import { connectDB, disconnectDB } from '../config/database.js'
 import { ROLES } from '../config/permissions.js'
-import { usersRepository } from '../repositories/users.repository.js'
+import { userRepository } from '../repositories/users.repository.js'
 import { normalizeEmail } from '../utils/validators.js'
 
 // Uso: npm run set-role -- <email> <rol>
@@ -17,12 +16,12 @@ const setRole = async () => {
   validateEnv()
   await connectDB()
 
-  const user = await usersRepository.getByEmail(normalizeEmail(email))
+  const user = await userRepository.findByEmail(normalizeEmail(email))
   if (!user) {
     throw new Error(`No existe un usuario con el email ${email}`)
   }
 
-  await usersRepository.updateRole(user._id, role)
+  await userRepository.updateRole(user._id, role)
   console.log(`Rol de ${user.email} actualizado a ${role}`)
 }
 
@@ -31,4 +30,4 @@ setRole()
     console.error(error.message)
     process.exitCode = 1
   })
-  .finally(() => mongoose.disconnect())
+  .finally(disconnectDB)

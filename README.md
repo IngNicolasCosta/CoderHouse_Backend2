@@ -78,6 +78,14 @@ Para generar un `JWT_SECRET` aleatorio:
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
+## Seguridad del repositorio
+
+- El archivo **`.env` no se sube** al repositorio: está en el `.gitignore` y contiene las credenciales reales (MongoDB, `JWT_SECRET`, email).
+- En el repo solo está **`.env.example`**, con las variables necesarias y valores de ejemplo.
+- **`node_modules` tampoco se sube**: se instala con `npm install`.
+- **Ninguna credencial está escrita en el código**: todo se lee de variables de entorno (`src/config/config.js`).
+- Las contraseñas de los usuarios se guardan **hasheadas con bcrypt** y **ninguna respuesta de la API incluye `password`**.
+
 ## Ejecución
 
 ```bash
@@ -126,13 +134,19 @@ CoderHouse_Backend2/
 │   │   ├── tickets.service.js      # inscripciones: validaciones, cupos y cancelación
 │   │   └── mail.service.js         # email de confirmación de inscripción
 │   ├── repositories/
-│   │   ├── events.repository.js
-│   │   ├── users.repository.js
-│   │   └── tickets.repository.js
+│   │   ├── events.repository.js    # EventRepository
+│   │   ├── users.repository.js     # UserRepository
+│   │   └── tickets.repository.js   # TicketRepository
 │   ├── dao/
-│   │   ├── events.dao.js
-│   │   ├── users.dao.js
-│   │   └── tickets.dao.js
+│   │   ├── base.dao.js             # BaseDAO: operaciones comunes con Mongoose
+│   │   ├── events.dao.js           # EventDAO
+│   │   ├── users.dao.js            # UserDAO
+│   │   └── tickets.dao.js          # TicketDAO
+│   ├── dto/
+│   │   ├── user.dto.js             # UserDTO, CurrentUserDTO, UserSummaryDTO
+│   │   ├── event.dto.js            # EventDTO, EventSummaryDTO
+│   │   ├── ticket.dto.js           # TicketDTO
+│   │   └── helpers.js
 │   ├── models/
 │   │   ├── User.js
 │   │   ├── Event.js
@@ -158,10 +172,86 @@ CoderHouse_Backend2/
 └── README.md
 ```
 
-Flujo de una petición:
+## Arquitectura en capas
+
+La API está organizada en capas con una responsabilidad cada una. Una petición recorre las capas de arriba hacia abajo, y la respuesta vuelve transformada por un DTO:
 
 ```
-Cliente → Router → Middleware → Controller → Service → Repository → DAO → Model (MongoDB)
+Cliente
+  ↓
+Router ─────────── define la URL y encadena middlewares
+  ↓
+Middlewares ────── autenticación (401) y autorización por rol/propiedad (403)
+  ↓
+Controller ─────── lee body/params/query, llama al service y responde
+  ↓
+Service ────────── reglas de negocio · devuelve DTOs
+  ↓
+Repository ─────── métodos del dominio (findByEmail, countOccupiedSeats, cancelTicket…)
+  ↓
+DAO ────────────── acceso a MongoDB con Mongoose
+  ↓
+Model ──────────── schema de Mongoose
+```
+
+| Capa | Carpeta | Responsabilidad | Ejemplo |
+|------|---------|-----------------|---------|
+| **Routes** | `routes/` | Asocian cada URL con sus middlewares y su controller. No tienen lógica | `router.post('/:eid/tickets', authenticate, authorizeRoles(...), createTicket)` |
+| **Middlewares** | `middlewares/` | Autenticación con Passport (`401`), autorización por rol (`403`), propiedad del recurso y manejo centralizado de errores | `authorizeRoles`, `authorizeEventOwnerOrAdmin`, `errorHandler` |
+| **Controllers** | `controllers/` | Solo coordinan: extraen datos del request, llaman al service y devuelven la respuesta. No calculan cupos, no validan estados ni importan modelos | `createTicket` llama a `ticketsService.createTicket(...)` y responde `201` |
+| **Services** | `services/` | Toda la lógica de negocio: validaciones, estados, cupos, duplicados, permisos sobre recursos propios y envío de email. Usan repositories, nunca DAOs ni modelos | `ticketsService` valida el torneo, el cupo y los duplicados y confirma la inscripción |
+| **Repositories** | `repositories/` | Intermediarios entre services y DAOs. Ofrecen métodos con nombres del dominio y arman los filtros y populates | `TicketRepository.countOccupiedSeats(eventId)`, `UserRepository.findByEmail(email)` |
+| **DAO** | `dao/` | Único lugar que usa Mongoose y los modelos: `findById`, `findOne`, `find`, `count`, `create`, `update` | `TicketDAO.sumQuantity(...)` hace el `aggregate` de cupos |
+| **DTO** | `dto/` | Definen exactamente qué datos salen en cada respuesta. Nunca incluyen `password`, y filtran también los documentos traídos con `populate` | `CurrentUserDTO` → `{ id, email, role }` |
+| **Models** | `models/` | Schemas de Mongoose: `User`, `Event`, `Ticket` (relacionados por referencias) | `Ticket.user` y `Ticket.event` son `ObjectId` |
+
+### Reglas que se cumplen en todo el proyecto
+
+- **Los modelos de Mongoose solo se importan en los DAO.** Ningún service, controller o middleware usa `UserModel`, `EventModel` o `TicketModel`, ni importa `mongoose`.
+- **Los services solo usan repositories** (y otros services). Por ejemplo, `ticketsService` usa `TicketRepository` y `UserRepository`, y le pide a `eventsService` el torneo.
+- **Los controllers solo coordinan request/response.** La única excepción intencional es el login: la estrategia de Passport valida las credenciales y el controller firma el JWT y setea la cookie, como pedía la pre-entrega 4.
+- **Toda respuesta con datos pasa por un DTO.** El `password` nunca sale de la capa de datos hacia el cliente, ni siquiera hasheado.
+- **Un id con formato inválido no rompe nada:** el DAO lo trata como "no encontrado", así la API responde `404` y no `500`.
+
+### DTOs
+
+| DTO | Se usa en | Campos |
+|-----|-----------|--------|
+| `UserDTO` | Registro, `GET /api/users`, cambio de rol | `id`, `first_name`, `last_name`, `email`, `role` |
+| `CurrentUserDTO` | `req.user` y `GET /api/sessions/current` | `id`, `email`, `role` |
+| `UserSummaryDTO` | Usuario con populate en `GET /api/events/:eid/tickets` | `id`, `first_name`, `last_name`, `email` |
+| `EventDTO` | Todas las respuestas de torneos (el detalle suma `availableSeats`) | `id`, `title`, `description`, `category`, `date`, `location`, `capacity`, `price`, `status`, `organizer` |
+| `EventSummaryDTO` | Torneo con populate en `GET /api/tickets/my-tickets` | `id`, `title`, `date`, `location`, `category`, `status` |
+| `TicketDTO` | Todas las respuestas de inscripciones | `id`, `event`, `user`, `quantity`, `status`, `reservationCode`, `createdAt`, `cancelledAt` (si `event` o `user` vienen con populate, pasan por su DTO resumido) |
+
+### Manejo de errores
+
+Los services lanzan `AppError(mensaje, código)` y el middleware centralizado [`errorHandler`](src/middlewares/errorHandler.middleware.js) responde siempre con el mismo formato:
+
+```json
+{ "status": "error", "message": "..." }
+```
+
+| Código | Cuándo |
+|--------|--------|
+| `400` | Datos o parámetros inválidos (campos faltantes, fecha pasada, `quantity` inválida, JSON mal formado) |
+| `401` | Sin sesión o token inválido |
+| `403` | Con sesión, pero sin permiso (rol o propiedad del recurso) |
+| `404` | Recurso inexistente o id inválido |
+| `409` | Conflicto con el estado actual (email registrado, inscripción duplicada, sin cupo, torneo cancelado) |
+| `500` | Error interno inesperado. En producción no se muestra el detalle |
+
+### Flujo de una petición: ejemplo de inscripción
+
+```
+POST /api/events/:eid/tickets
+  → authenticate                  Passport 'current': JWT de la cookie → req.user (CurrentUserDTO)
+  → authorizeRoles(...)           el rol puede inscribirse
+  → tickets.controller            createTicket(req.params.eid, req.user, req.body)
+  → tickets.service               valida quantity, torneo, duplicado y cupo; crea pending → confirmed; email
+  → TicketRepository              findActiveByUserAndEvent, countOccupiedSeats, createTicket, confirmTicket
+  → TicketDAO                     findOne, aggregate, create, findOneAndUpdate
+  → TicketDTO                     respuesta 201 sin datos internos
 ```
 
 En las rutas de sesión, el middleware es una estrategia de Passport:
@@ -860,6 +950,12 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | Bajar la `capacity` de un torneo por debajo de lo ocupado | `409` |
 | 10 inscripciones simultáneas a un torneo con cupo 3 | 3 × `201` y 7 × `409`: nunca se supera el cupo |
 | El mismo usuario manda 5 inscripciones simultáneas | 1 × `201` y 4 × `409`: un solo ticket activo |
+| Flujo completo: registro → login → crear torneo → inscribirse → mis tickets → cancelar | `201` → `200` → `201` → `201` → `200` → `200` |
+| `/current` | Solo `id`, `email` y `role` (sin `password`) |
+| Inscriptos con populate del usuario | Solo `id`, `first_name`, `last_name` y `email` (sin `password`) |
+| Mis tickets con populate del torneo | Solo los datos básicos del torneo (`EventSummaryDTO`) |
+| Todas las respuestas del flujo | Ninguna contiene `password` ni un hash bcrypt |
+| Errores de negocio (duplicado, fecha pasada, cancelar dos veces, id inválido) | `409` / `400` / `409` / `404`: nunca `500` |
 
 ## Evidencia
 
@@ -990,5 +1086,6 @@ El organizador dueño ve los inscriptos y el resumen de cupos (los cancelados no
 | 5 | Roles y autorización | ✅ |
 | 6 | Entidad events y lógica de negocio | ✅ |
 | 7 | Tickets, inscripciones y control de cupos | ✅ |
+| 8 | Arquitectura con DAO, Repository y DTO | ✅ |
 
 Cada entrega está marcada con un tag de git (`pre-entrega-1`, `pre-entrega-2`, …) para poder ver el código tal como quedó en cada etapa.

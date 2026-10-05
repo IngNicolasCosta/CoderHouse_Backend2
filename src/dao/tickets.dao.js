@@ -1,23 +1,10 @@
 import mongoose from 'mongoose'
 import { TicketModel } from '../models/Ticket.js'
+import { BaseDAO } from './base.dao.js'
 
-class TicketsDao {
-  async create (data) {
-    const ticket = await TicketModel.create(data)
-    return ticket.toObject()
-  }
-
-  findById (id) {
-    return TicketModel.findById(id).lean()
-  }
-
-  findOne (filter) {
-    return TicketModel.findOne(filter).lean()
-  }
-
-  find (filter, { populate } = {}) {
-    const query = TicketModel.find(filter).sort({ createdAt: -1 })
-    return (populate ? query.populate(populate) : query).lean()
+export class TicketDAO extends BaseDAO {
+  constructor () {
+    super(TicketModel)
   }
 
   // Suma la quantity de los tickets de un evento con los estados indicados.
@@ -32,10 +19,4 @@ class TicketsDao {
     ])
     return result?.total ?? 0
   }
-
-  updateOne (filter, data) {
-    return TicketModel.findOneAndUpdate(filter, data, { returnDocument: 'after', runValidators: true }).lean()
-  }
 }
-
-export const ticketsDao = new TicketsDao()

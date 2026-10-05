@@ -1,11 +1,15 @@
-import { eventsDao } from '../dao/events.dao.js'
+import { EventDAO } from '../dao/events.dao.js'
 
-class EventsRepository {
-  constructor (dao) {
+export class EventRepository {
+  constructor (dao = new EventDAO()) {
     this.dao = dao
   }
 
-  async getPaginated (filter, { sort, page, limit }) {
+  findById (id) {
+    return this.dao.findById(id)
+  }
+
+  async findPaginated (filter, { sort, page, limit }) {
     const [events, total] = await Promise.all([
       this.dao.find(filter, { sort, skip: (page - 1) * limit, limit }),
       this.dao.count(filter)
@@ -13,17 +17,13 @@ class EventsRepository {
     return { events, total }
   }
 
-  getById (id) {
-    return this.dao.findById(id)
-  }
-
-  create (data) {
+  createEvent (data) {
     return this.dao.create(data)
   }
 
-  update (id, data) {
-    return this.dao.updateById(id, data)
+  updateEvent (id, data) {
+    return this.dao.update(id, data)
   }
 }
 
-export const eventsRepository = new EventsRepository(eventsDao)
+export const eventRepository = new EventRepository()

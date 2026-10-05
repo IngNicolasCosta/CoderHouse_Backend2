@@ -1,15 +1,7 @@
-import mongoose from 'mongoose'
-import { usersRepository } from '../repositories/users.repository.js'
+import { userRepository } from '../repositories/users.repository.js'
+import { UserDTO } from '../dto/user.dto.js'
 import { ROLES } from '../config/permissions.js'
 import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
-
-export const toPublicUser = (user) => ({
-  id: user._id.toString(),
-  first_name: user.first_name,
-  last_name: user.last_name,
-  email: user.email,
-  role: user.role
-})
 
 class UsersService {
   constructor (repository) {
@@ -17,8 +9,8 @@ class UsersService {
   }
 
   async getUsers () {
-    const users = await this.repository.getAll()
-    return users.map(toPublicUser)
+    const users = await this.repository.findAll()
+    return users.map((user) => new UserDTO(user))
   }
 
   async changeRole (userId, role, requesterId) {
@@ -30,14 +22,14 @@ class UsersService {
       throw new AppError(ERROR_MESSAGES.ownRoleChange, 400)
     }
 
-    const user = mongoose.isValidObjectId(userId) ? await this.repository.updateRole(userId, role) : null
+    const user = await this.repository.updateRole(userId, role)
 
     if (!user) {
       throw new AppError(ERROR_MESSAGES.userNotFound, 404)
     }
 
-    return toPublicUser(user)
+    return new UserDTO(user)
   }
 }
 
-export const usersService = new UsersService(usersRepository)
+export const usersService = new UsersService(userRepository)

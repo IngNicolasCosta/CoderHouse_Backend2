@@ -1,4 +1,3 @@
-import { canManageEvent, canManageTicket } from '../config/permissions.js'
 import { eventsService } from '../services/events.service.js'
 import { ticketsService } from '../services/tickets.service.js'
 import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
@@ -17,27 +16,16 @@ export const authorizeRoles = (...allowedRoles) => (req, res, next) => {
   next()
 }
 
-// Autorización por propiedad: el organizer solo puede gestionar sus propios
-// eventos; los roles con manageAnyEvent (admin) pueden gestionar cualquiera
+// Autorización por propiedad del evento (la regla vive en eventsService): 404 si no
+// existe, 403 si no es del organizer ni lo pide un admin. Deja el evento en req.event
 export const authorizeEventOwnerOrAdmin = async (req, res, next) => {
-  const event = await eventsService.findEventOrFail(req.params.eid ?? req.params.id)
-
-  if (!canManageEvent(req.user, event)) {
-    throw new AppError(ERROR_MESSAGES.eventForbidden, 403)
-  }
-
-  req.event = event
+  req.event = await eventsService.getManageableEvent(req.params.eid ?? req.params.id, req.user)
   next()
 }
 
-// Autorización por propiedad del ticket: lo cancela su dueño o un admin
+// Autorización por propiedad del ticket (la regla vive en ticketsService): lo cancela
+// su dueño o un admin. Deja el ticket en req.ticket
 export const authorizeTicketOwnerOrAdmin = async (req, res, next) => {
-  const ticket = await ticketsService.findTicketOrFail(req.params.tid)
-
-  if (!canManageTicket(req.user, ticket)) {
-    throw new AppError(ERROR_MESSAGES.ticketForbidden, 403)
-  }
-
-  req.ticket = ticket
+  req.ticket = await ticketsService.getCancellableTicket(req.params.tid, req.user)
   next()
 }

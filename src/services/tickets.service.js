@@ -1,9 +1,10 @@
-import mongoose from 'mongoose'
-import { ticketsRepository } from '../repositories/tickets.repository.js'
-import { usersRepository } from '../repositories/users.repository.js'
+import { ticketRepository } from '../repositories/tickets.repository.js'
+import { userRepository } from '../repositories/users.repository.js'
 import { eventsService } from './events.service.js'
 import { mailService } from './mail.service.js'
+import { TicketDTO } from '../dto/ticket.dto.js'
 import { EVENT_STATUS, TICKET_STATUS } from '../config/constants.js'
+import { canManageTicket } from '../config/permissions.js'
 import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
 import { generateReservationCode } from '../utils/codes.js'
 
@@ -11,41 +12,6 @@ const DUPLICATE_KEY_ERROR = 11000
 const MAX_CODE_ATTEMPTS = 3
 
 const conflict = (message) => new AppError(message, 409)
-
-const refId = (ref) => (ref?._id ?? ref).toString()
-
-const toTicketResponse = (ticket) => ({
-  id: ticket._id.toString(),
-  event: refId(ticket.event),
-  user: refId(ticket.user),
-  quantity: ticket.quantity,
-  status: ticket.status,
-  reservationCode: ticket.reservationCode,
-  createdAt: ticket.createdAt,
-  cancelledAt: ticket.cancelledAt
-})
-
-const toMyTicketResponse = (ticket) => ({
-  ...toTicketResponse(ticket),
-  event: {
-    id: refId(ticket.event),
-    title: ticket.event.title,
-    date: ticket.event.date,
-    location: ticket.event.location,
-    category: ticket.event.category,
-    status: ticket.event.status
-  }
-})
-
-const toEventTicketResponse = (ticket) => ({
-  ...toTicketResponse(ticket),
-  user: {
-    id: refId(ticket.user),
-    first_name: ticket.user.first_name,
-    last_name: ticket.user.last_name,
-    email: ticket.user.email
-  }
-})
 
 const parseQuantity = (value) => {
   if (value === undefined) return 1
@@ -85,7 +51,7 @@ class TicketsService {
     const event = await eventsService.getVisibleEvent(eventId, user)
     assertEventOpen(event)
 
-    if (await this.repository.getActiveByUserAndEvent(user.id, event.id)) {
+    if (await this.repository.findActiveByUserAndEvent(user.id, event.id)) {
       throw conflict(ERROR_MESSAGES.duplicateTicket)
     }
 
@@ -97,22 +63,22 @@ class TicketsService {
     // anteriores a esta: si entraron varias inscripciones al mismo tiempo por los
     // últimos lugares, las primeras se confirman y las que se pasan del cupo se cancelan
     const ticket = await this.reserve(event.id, user.id, quantity)
-    const occupiedUpToThis = await this.repository.getOccupiedSeats(event.id, { upToTicketId: ticket._id })
+    const occupiedUpToThis = await this.repository.countOccupiedSeats(event.id, { upToTicketId: ticket._id })
 
     if (occupiedUpToThis > event.capacity) {
-      await this.repository.cancel(ticket._id)
+      await this.repository.cancelTicket(ticket._id)
       throw noSeatsError(Math.max(event.capacity - (occupiedUpToThis - quantity), 0), quantity)
     }
 
-    const confirmed = await this.repository.confirm(ticket._id)
+    const confirmed = await this.repository.confirmTicket(ticket._id)
     this.notifyConfirmation(user.id, event, confirmed)
-    return toTicketResponse(confirmed)
+    return new TicketDTO(confirmed)
   }
 
   async reserve (eventId, userId, quantity) {
     for (let attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
       try {
-        return await this.repository.create({
+        return await this.repository.createTicket({
           user: userId,
           event: eventId,
           quantity,
@@ -130,34 +96,45 @@ class TicketsService {
 
   // El email se envía en segundo plano: si falla, la inscripción ya quedó confirmada igual
   notifyConfirmation (userId, event, ticket) {
-    usersRepository.getById(userId)
+    userRepository.findById(userId)
       .then((user) => mailService.sendTicketConfirmation({ to: user.email, name: user.first_name, event, ticket }))
       .catch((error) => console.error('No se pudo enviar el email de confirmación:', error.message))
   }
 
   async findTicketOrFail (id) {
-    const ticket = mongoose.isValidObjectId(id) ? await this.repository.getById(id) : null
+    const ticket = await this.repository.findById(id)
 
     if (!ticket) {
       throw new AppError(ERROR_MESSAGES.ticketNotFound, 404)
     }
 
-    return toTicketResponse(ticket)
+    return new TicketDTO(ticket)
+  }
+
+  // Permisos sobre recursos propios: un ticket lo cancela su dueño o un admin
+  async getCancellableTicket (id, user) {
+    const ticket = await this.findTicketOrFail(id)
+
+    if (!canManageTicket(user, ticket)) {
+      throw new AppError(ERROR_MESSAGES.ticketForbidden, 403)
+    }
+
+    return ticket
   }
 
   async getMyTickets (userId) {
-    const tickets = await this.repository.getByUser(userId)
-    return tickets.map(toMyTicketResponse)
+    const tickets = await this.repository.findByUser(userId)
+    return tickets.map((ticket) => new TicketDTO(ticket))
   }
 
   async getEventTickets (event) {
     const [tickets, occupied] = await Promise.all([
-      this.repository.getByEvent(event.id),
-      this.repository.getOccupiedSeats(event.id)
+      this.repository.findByEvent(event.id),
+      this.repository.countOccupiedSeats(event.id)
     ])
 
     return {
-      tickets: tickets.map(toEventTicketResponse),
+      tickets: tickets.map((ticket) => new TicketDTO(ticket)),
       summary: { capacity: event.capacity, occupied, available: Math.max(event.capacity - occupied, 0) }
     }
   }
@@ -172,13 +149,13 @@ class TicketsService {
       throw conflict('No se puede cancelar una inscripción de un evento que ya ocurrió')
     }
 
-    const cancelled = await this.repository.cancel(ticket.id)
+    const cancelled = await this.repository.cancelTicket(ticket.id)
     if (!cancelled) {
       throw conflict('La inscripción ya está cancelada')
     }
 
-    return toTicketResponse(cancelled)
+    return new TicketDTO(cancelled)
   }
 }
 
-export const ticketsService = new TicketsService(ticketsRepository)
+export const ticketsService = new TicketsService(ticketRepository)

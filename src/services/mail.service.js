@@ -48,8 +48,9 @@ class MailService {
       `
     })
 
+    // Con una casilla de prueba (Ethereal) se muestra el link para ver el email enviado
     const previewUrl = nodemailer.getTestMessageUrl(info)
-    console.log(`Email de confirmación enviado a ${to}${previewUrl ? ` (vista previa: ${previewUrl})` : ''}`)
+    if (previewUrl) console.info(`Vista previa del email: ${previewUrl}`)
   }
 }
 

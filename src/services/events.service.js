@@ -1,6 +1,6 @@
-import mongoose from 'mongoose'
-import { eventsRepository } from '../repositories/events.repository.js'
-import { ticketsRepository } from '../repositories/tickets.repository.js'
+import { eventRepository } from '../repositories/events.repository.js'
+import { ticketRepository } from '../repositories/tickets.repository.js'
+import { EventDTO } from '../dto/event.dto.js'
 import {
   EVENT_CATEGORIES,
   EVENT_SORT_FIELDS,
@@ -40,18 +40,6 @@ const parseDate = (value, field) => {
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-const toEventResponse = (event) => ({
-  id: event._id.toString(),
-  title: event.title,
-  description: event.description,
-  category: event.category,
-  date: event.date,
-  location: event.location,
-  capacity: event.capacity,
-  price: event.price,
-  status: event.status,
-  organizer: event.organizer.toString()
-})
 
 // Valida y normaliza los datos de un evento. Con partial solo valida los campos enviados (PUT)
 const buildEventData = (input = {}, { partial = false } = {}) => {
@@ -180,10 +168,10 @@ class EventsService {
     const page = parsePositiveInt(query.page, PAGINATION.defaultPage, 'page')
     const limit = Math.min(parsePositiveInt(query.limit, PAGINATION.defaultLimit, 'limit'), PAGINATION.maxLimit)
 
-    const { events, total } = await this.repository.getPaginated(filter, { sort, page, limit })
+    const { events, total } = await this.repository.findPaginated(filter, { sort, page, limit })
 
     return {
-      data: events.map(toEventResponse),
+      data: events.map((event) => new EventDTO(event)),
       page,
       limit,
       total,
@@ -192,13 +180,24 @@ class EventsService {
   }
 
   async findEventOrFail (id) {
-    const event = mongoose.isValidObjectId(id) ? await this.repository.getById(id) : null
+    const event = await this.repository.findById(id)
 
     if (!event) {
       throw new AppError(ERROR_MESSAGES.eventNotFound, 404)
     }
 
-    return toEventResponse(event)
+    return new EventDTO(event)
+  }
+
+  // Permisos sobre recursos propios: el organizer solo gestiona sus torneos y el admin cualquiera
+  async getManageableEvent (id, user) {
+    const event = await this.findEventOrFail(id)
+
+    if (!canManageEvent(user, event)) {
+      throw new AppError(ERROR_MESSAGES.eventForbidden, 403)
+    }
+
+    return event
   }
 
   // Los borradores no son públicos: solo los ve su organizer o un admin.
@@ -210,8 +209,9 @@ class EventsService {
       throw new AppError(ERROR_MESSAGES.eventNotFound, 404)
     }
 
-    const occupied = await ticketsRepository.getOccupiedSeats(event.id)
-    return { ...event, availableSeats: Math.max(event.capacity - occupied, 0) }
+    const occupied = await ticketRepository.countOccupiedSeats(event.id)
+    event.availableSeats = Math.max(event.capacity - occupied, 0)
+    return event
   }
 
   async createEvent (input = {}, organizerId) {
@@ -222,8 +222,8 @@ class EventsService {
       throw badRequest(`Un evento nuevo solo puede crearse como ${CREATABLE_STATUSES.join(' o ')}`)
     }
 
-    const event = await this.repository.create({ ...data, status, organizer: organizerId })
-    return toEventResponse(event)
+    const event = await this.repository.createEvent({ ...data, status, organizer: organizerId })
+    return new EventDTO(event)
   }
 
   async updateEvent (event, input = {}) {
@@ -238,14 +238,14 @@ class EventsService {
     const data = buildEventData(input, { partial: true })
 
     if (data.capacity !== undefined) {
-      const occupied = await ticketsRepository.getOccupiedSeats(event.id)
+      const occupied = await ticketRepository.countOccupiedSeats(event.id)
       if (data.capacity < occupied) {
         throw conflict(`La capacidad no puede ser menor a los cupos ya ocupados (${occupied})`)
       }
     }
 
-    const updated = await this.repository.update(event.id, data)
-    return toEventResponse(updated)
+    const updated = await this.repository.updateEvent(event.id, data)
+    return new EventDTO(updated)
   }
 
   async changeStatus (event, status) {
@@ -275,9 +275,9 @@ class EventsService {
       throw conflict('No se puede finalizar un evento que todavía no ocurrió')
     }
 
-    const updated = await this.repository.update(event.id, { status })
-    return toEventResponse(updated)
+    const updated = await this.repository.updateEvent(event.id, { status })
+    return new EventDTO(updated)
   }
 }
 
-export const eventsService = new EventsService(eventsRepository)
+export const eventsService = new EventsService(eventRepository)

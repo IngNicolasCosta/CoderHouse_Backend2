@@ -1,29 +1,29 @@
-import { usersDao } from '../dao/users.dao.js'
+import { UserDAO } from '../dao/users.dao.js'
 
-class UsersRepository {
-  constructor (dao) {
+export class UserRepository {
+  constructor (dao = new UserDAO()) {
     this.dao = dao
   }
 
-  getAll () {
+  findAll () {
     return this.dao.find()
   }
 
-  getByEmail (email) {
-    return this.dao.findOne({ email })
-  }
-
-  getById (id) {
+  findById (id) {
     return this.dao.findById(id)
   }
 
-  create (data) {
+  findByEmail (email) {
+    return this.dao.findOne({ email })
+  }
+
+  createUser (data) {
     return this.dao.create(data)
   }
 
   updateRole (id, role) {
-    return this.dao.updateById(id, { role })
+    return this.dao.update(id, { role })
   }
 }
 
-export const usersRepository = new UsersRepository(usersDao)
+export const userRepository = new UserRepository()
