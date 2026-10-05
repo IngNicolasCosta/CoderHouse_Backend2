@@ -140,7 +140,7 @@
         <div class="card shadow-sm h-100">
           <div class="card-header fw-semibold">Crear torneo <span class="badge text-bg-warning ms-1">organizer / admin</span></div>
           <div class="card-body">
-            <form class="row g-3" data-endpoint="/api/events" data-number-fields="capacity,price" novalidate>
+            <form class="row g-3" data-endpoint="/api/events" data-number-fields="capacity,price" data-datetime-fields="date" novalidate>
               <div class="col-md-8">
                 <label for="event_title" class="form-label">Título</label>
                 <input type="text" class="form-control" id="event_title" name="title" placeholder="Torneo Apertura">
@@ -157,8 +157,8 @@
                 <select class="form-select" id="event_category" name="category"><option value="A-femenino">Liga A Femenino</option><option value="A-masculino">Liga A Masculino</option><option value="B-femenino">Liga B Femenino</option><option value="B-masculino">Liga B Masculino</option><option value="C-femenino">Liga C Femenino</option><option value="C-masculino">Liga C Masculino</option><option value="D-femenino">Liga D Femenino</option><option value="D-masculino">Liga D Masculino</option><option value="E-femenino">Liga E Femenino</option><option value="E-masculino">Liga E Masculino</option></select>
               </div>
               <div class="col-md-4">
-                <label for="event_date" class="form-label">Fecha</label>
-                <input type="date" class="form-control" id="event_date" name="date">
+                <label for="event_date" class="form-label">Fecha y hora</label>
+                <input type="datetime-local" class="form-control" id="event_date" name="date">
               </div>
               <div class="col-md-2">
                 <label for="event_capacity" class="form-label">Cupo</label>
@@ -366,6 +366,9 @@ ${JSON.stringify(data, null, 2)}`
       const data = Object.fromEntries(new FormData(form))
       const numberFields = form.dataset.numberFields?.split(',') ?? []
       numberFields.forEach((field) => { if (data[field] !== '') data[field] = Number(data[field]) })
+      // datetime-local no tiene zona horaria: se convierte a ISO con la hora local del navegador
+      const datetimeFields = form.dataset.datetimeFields?.split(',') ?? []
+      datetimeFields.forEach((field) => { if (data[field] !== '') data[field] = new Date(data[field]).toISOString() })
       return data
     }
 
