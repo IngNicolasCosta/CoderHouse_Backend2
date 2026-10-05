@@ -10,7 +10,7 @@
   <nav class="navbar navbar-dark bg-primary">
     <div class="container">
       <span class="navbar-brand fw-bold">🏐 Liga de Vóley API</span>
-      <span class="badge text-bg-light">Pre-entrega 4</span>
+      <span class="badge text-bg-light">Pre-entrega 5</span>
     </div>
   </nav>
 
@@ -34,15 +34,20 @@
           <div class="table-responsive">
             <table class="table table-sm align-middle mb-0">
               <thead class="table-light">
-                <tr><th>Método</th><th>Ruta</th><th>Estado</th></tr>
+                <tr><th>Método</th><th>Ruta</th><th>Acceso</th></tr>
               </thead>
               <tbody>
-                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/health</code></td><td>Activa</td></tr>
-                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/events</code></td><td>Activa</td></tr>
-                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/register</code></td><td>Activa</td></tr>
-                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/login</code></td><td>Activa</td></tr>
-                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/sessions/current</code></td><td>Activa (requiere login)</td></tr>
-                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/logout</code></td><td>Activa</td></tr>
+                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/health</code></td><td>Pública</td></tr>
+                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/events</code></td><td>Pública</td></tr>
+                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/events</code></td><td>organizer, admin</td></tr>
+                <tr><td><span class="badge text-bg-info">PUT</span></td><td><code>/api/events/:eventId</code></td><td>dueño o admin</td></tr>
+                <tr><td><span class="badge text-bg-secondary">PATCH</span></td><td><code>/api/events/:eventId/cancel</code></td><td>dueño o admin</td></tr>
+                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/register</code></td><td>Pública</td></tr>
+                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/login</code></td><td>Pública</td></tr>
+                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/sessions/current</code></td><td>Con sesión</td></tr>
+                <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/logout</code></td><td>Pública</td></tr>
+                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/users</code></td><td>admin</td></tr>
+                <tr><td><span class="badge text-bg-secondary">PATCH</span></td><td><code>/api/users/:uid/role</code></td><td>admin</td></tr>
               </tbody>
             </table>
           </div>
@@ -58,6 +63,7 @@
               <button class="btn btn-sm btn-outline-primary" data-endpoint="/api/events">GET /api/events</button>
               <button class="btn btn-sm btn-outline-success" data-endpoint="/api/sessions/current">GET /api/sessions/current</button>
               <button class="btn btn-sm btn-outline-danger" data-endpoint="/api/sessions/logout" data-method="POST">POST /api/sessions/logout</button>
+              <button class="btn btn-sm btn-outline-dark" data-endpoint="/api/users">GET /api/users (admin)</button>
             </div>
             <pre id="response" class="bg-dark text-light rounded p-3 small mb-0">Elegí un endpoint para ver la respuesta</pre>
           </div>
@@ -124,6 +130,58 @@
           </div>
         </div>
       </div>
+      <div class="col-lg-8">
+        <div class="card shadow-sm h-100">
+          <div class="card-header fw-semibold">Crear torneo <span class="badge text-bg-warning ms-1">organizer / admin</span></div>
+          <div class="card-body">
+            <form class="row g-3" data-endpoint="/api/events" data-number-fields="capacity" novalidate>
+              <div class="col-md-8">
+                <label for="event_title" class="form-label">Título</label>
+                <input type="text" class="form-control" id="event_title" name="title" placeholder="Torneo Apertura">
+              </div>
+              <div class="col-md-4">
+                <label for="event_status" class="form-label">Estado</label>
+                <select class="form-select" id="event_status" name="status">
+                  <option value="published">Publicado</option>
+                  <option value="draft">Borrador</option>
+                </select>
+              </div>
+              <div class="col-md-3">
+                <label for="event_division" class="form-label">División</label>
+                <select class="form-select" id="event_division" name="division">
+                  <option>A</option><option>B</option><option>C</option><option>D</option><option>E</option>
+                </select>
+              </div>
+              <div class="col-md-3">
+                <label for="event_gender" class="form-label">Rama</label>
+                <select class="form-select" id="event_gender" name="gender">
+                  <option value="femenino">Femenino</option>
+                  <option value="masculino">Masculino</option>
+                </select>
+              </div>
+              <div class="col-md-3">
+                <label for="event_date" class="form-label">Fecha</label>
+                <input type="date" class="form-control" id="event_date" name="date">
+              </div>
+              <div class="col-md-3">
+                <label for="event_capacity" class="form-label">Cupo (equipos)</label>
+                <input type="number" class="form-control" id="event_capacity" name="capacity" min="1" value="12">
+              </div>
+              <div class="col-md-6">
+                <label for="event_location" class="form-label">Sede</label>
+                <input type="text" class="form-control" id="event_location" name="location" placeholder="Club Ferro">
+              </div>
+              <div class="col-md-6">
+                <label for="event_description" class="form-label">Descripción</label>
+                <input type="text" class="form-control" id="event_description" name="description">
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-warning">POST /api/events</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -141,6 +199,13 @@ ${JSON.stringify(data, null, 2)}`
       }
     }
 
+    const formToJson = (form) => {
+      const data = Object.fromEntries(new FormData(form))
+      const numberFields = form.dataset.numberFields?.split(',') ?? []
+      numberFields.forEach((field) => { if (data[field] !== '') data[field] = Number(data[field]) })
+      return data
+    }
+
     const output = document.getElementById('response')
     const formOutput = document.getElementById('form-response')
 
@@ -156,7 +221,7 @@ ${JSON.stringify(data, null, 2)}`
         showResponse(formOutput, fetch(form.dataset.endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.fromEntries(new FormData(form)))
+          body: JSON.stringify(formToJson(form))
         }))
       })
     })

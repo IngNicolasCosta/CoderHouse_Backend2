@@ -19,3 +19,6 @@ export const passportCall = (strategy, badRequestMessage = ERROR_MESSAGES.missin
       next()
     })(req, res, next)
   }
+
+// Autenticación: valida el JWT de la cookie y deja { id, email, role } en req.user (401 si no hay sesión)
+export const authenticate = passportCall('current')

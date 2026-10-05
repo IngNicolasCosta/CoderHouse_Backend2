@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { ROLES } from '../config/permissions.js'
 
 const userSchema = new mongoose.Schema(
   {
@@ -25,8 +26,8 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['user', 'organizer', 'admin'],
-      default: 'user'
+      enum: Object.values(ROLES),
+      default: ROLES.USER
     }
   },
   {

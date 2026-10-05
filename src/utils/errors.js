@@ -12,5 +12,11 @@ export const ERROR_MESSAGES = {
   emailTaken: 'El email ya está registrado',
   missingCredentials: 'Email y contraseña son obligatorios',
   invalidCredentials: 'Credenciales inválidas',
-  unauthenticated: 'No autenticado'
+  unauthenticated: 'No autenticado',
+  forbidden: 'No tenés permisos para realizar esta acción',
+  eventForbidden: 'No tenés permisos para modificar este evento',
+  eventNotFound: 'Evento no encontrado',
+  userNotFound: 'Usuario no encontrado',
+  invalidRole: 'El rol indicado no es válido',
+  ownRoleChange: 'No podés cambiar tu propio rol'
 }

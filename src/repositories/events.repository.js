@@ -5,8 +5,20 @@ class EventsRepository {
     this.dao = dao
   }
 
-  getAll () {
-    return this.dao.find()
+  getPublished () {
+    return this.dao.find({ status: 'published' })
+  }
+
+  getById (id) {
+    return this.dao.findById(id)
+  }
+
+  create (data) {
+    return this.dao.create(data)
+  }
+
+  update (id, data) {
+    return this.dao.updateById(id, data)
   }
 }
 

@@ -5,6 +5,10 @@ class UsersRepository {
     this.dao = dao
   }
 
+  getAll () {
+    return this.dao.find()
+  }
+
   getByEmail (email) {
     return this.dao.findOne({ email })
   }
@@ -15,6 +19,10 @@ class UsersRepository {
 
   create (data) {
     return this.dao.create(data)
+  }
+
+  updateRole (id, role) {
+    return this.dao.updateById(id, { role })
   }
 }
 

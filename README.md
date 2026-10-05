@@ -80,6 +80,9 @@ npm run dev
 
 # producción
 npm start
+
+# asignar un rol a un usuario registrado (por ejemplo, el primer admin)
+npm run set-role -- admin@mail.com admin
 ```
 
 Con el servidor levantado, en `http://localhost:8080/` hay una página de inicio con las rutas disponibles y formularios para probar registro, login, `current` y logout.
@@ -94,18 +97,22 @@ CoderHouse_Backend2/
 │   ├── config/
 │   │   ├── config.js           # variables de entorno (dotenv) y opciones de la cookie
 │   │   ├── database.js         # conexión a MongoDB
-│   │   └── passport.config.js  # estrategias de Passport: register, login y current
+│   │   ├── passport.config.js  # estrategias de Passport: register, login y current
+│   │   └── permissions.js      # roles y matriz de permisos
 │   ├── routes/
 │   │   ├── health.router.js
-│   │   ├── events.router.js
-│   │   └── sessions.router.js
+│   │   ├── events.router.js    # rutas de eventos protegidas con authenticate + authorizeRoles
+│   │   ├── sessions.router.js
+│   │   └── users.router.js     # rutas administrativas (solo admin)
 │   ├── controllers/
 │   │   ├── health.controller.js
 │   │   ├── events.controller.js
-│   │   └── sessions.controller.js
+│   │   ├── sessions.controller.js
+│   │   └── users.controller.js
 │   ├── services/
 │   │   ├── events.service.js
-│   │   └── sessions.service.js     # reglas de negocio: alta de usuario, credenciales, usuario de la sesión
+│   │   ├── sessions.service.js     # reglas de negocio: alta de usuario, credenciales, usuario de la sesión
+│   │   └── users.service.js        # listado de usuarios y cambio de rol
 │   ├── repositories/
 │   │   ├── events.repository.js
 │   │   └── users.repository.js
@@ -116,9 +123,12 @@ CoderHouse_Backend2/
 │   │   ├── User.js
 │   │   └── Event.js
 │   ├── middlewares/
-│   │   ├── auth.middleware.js      # passportCall: ejecuta una estrategia y responde errores en JSON
+│   │   ├── auth.middleware.js      # authenticate (401) y passportCall
+│   │   ├── authorize.middleware.js # authorizeRoles (403) y authorizeEventOwnerOrAdmin
 │   │   ├── notFound.middleware.js
 │   │   └── errorHandler.middleware.js
+│   ├── scripts/
+│   │   └── setRole.js          # npm run set-role: asigna un rol (para crear el primer admin)
 │   ├── utils/
 │   │   ├── hash.js             # createHash / isValidPassword (bcrypt)
 │   │   ├── jwt.js              # generateToken (lo usa el controller de login)
@@ -147,17 +157,24 @@ Cliente → Router → passportCall('register' | 'login' | 'current') → Strate
 
 ## Rutas disponibles
 
-| Método | Ruta                      | Descripción                                   | Requiere login |
-|--------|---------------------------|-----------------------------------------------|:--------------:|
-| GET    | `/`                       | Página de inicio para probar la API           | No |
-| GET    | `/api/health`             | Estado del servidor                           | No |
-| GET    | `/api/events`             | Listado de torneos                            | No |
-| POST   | `/api/sessions/register`  | Registro de usuario                           | No |
-| POST   | `/api/sessions/login`     | Login: genera el JWT y lo guarda en la cookie | No |
-| GET    | `/api/sessions/current`   | Datos del usuario autenticado                 | ✅ |
-| POST   | `/api/sessions/logout`    | Cierra la sesión borrando la cookie           | No |
+| Método | Ruta                          | Descripción                                   | Acceso |
+|--------|-------------------------------|-----------------------------------------------|--------|
+| GET    | `/`                           | Página de inicio para probar la API           | Pública |
+| GET    | `/api/health`                 | Estado del servidor                           | Pública |
+| GET    | `/api/events`                 | Listado de torneos publicados                 | Pública |
+| POST   | `/api/events`                 | Crear un torneo                               | 🔒 `organizer`, `admin` |
+| PUT    | `/api/events/:eventId`        | Modificar un torneo                           | 🔒 dueño (`organizer`) o `admin` |
+| PATCH  | `/api/events/:eventId/cancel` | Cancelar un torneo                            | 🔒 dueño (`organizer`) o `admin` |
+| POST   | `/api/sessions/register`      | Registro de usuario                           | Pública |
+| POST   | `/api/sessions/login`         | Login: genera el JWT y lo guarda en la cookie | Pública |
+| GET    | `/api/sessions/current`       | Datos del usuario autenticado                 | 🔒 cualquier usuario con sesión |
+| POST   | `/api/sessions/logout`        | Cierra la sesión borrando la cookie           | Pública |
+| GET    | `/api/users`                  | Listado de todos los usuarios                 | 🔒 `admin` |
+| PATCH  | `/api/users/:uid/role`        | Cambiar el rol de un usuario                  | 🔒 `admin` |
 
 Todas las respuestas tienen el formato `{ "status": "success" | "error", ... }`. Una ruta inexistente devuelve `404`.
+
+Las rutas 🔒 responden **`401`** si no hay sesión y **`403`** si hay sesión pero el rol no tiene permiso (ver [Roles y autorización](#roles-y-autorización)).
 
 ### `GET /api/health`
 
@@ -169,11 +186,73 @@ Response `200`:
 
 ### `GET /api/events`
 
+Devuelve solo los torneos con `status: "published"`.
+
 Response `200`:
 
 ```json
-{ "status": "success", "payload": [] }
+{ "status": "success", "payload": [ { "id": "6690...", "title": "Torneo Apertura", "division": "A", "gender": "femenino", "status": "published", "organizer": "665f2a...", "...": "..." } ] }
 ```
+
+### `POST /api/events` 🔒 organizer, admin
+
+| Campo         | Tipo   | Obligatorio | Reglas |
+|---------------|--------|:-----------:|--------|
+| `title`       | string | ✅ | |
+| `division`    | string | ✅ | `A`, `B`, `C`, `D` o `E` |
+| `gender`      | string | ✅ | `femenino` o `masculino` |
+| `date`        | fecha  | ✅ | ISO 8601, por ejemplo `2026-11-15T10:00:00Z` |
+| `location`    | string | ✅ | Sede |
+| `capacity`    | number | ✅ | Cupo de equipos, mínimo 1 |
+| `description` | string | | |
+| `status`      | string | | `draft` (por defecto), `published`, `cancelled` o `finished` |
+
+El `organizer` **no se toma del body**: siempre es el usuario autenticado.
+
+Request:
+
+```json
+{ "title": "Torneo Apertura", "division": "A", "gender": "femenino", "date": "2026-11-15T10:00:00Z", "location": "Club Ferro", "capacity": 12, "status": "published" }
+```
+
+Response `201`:
+
+```json
+{ "status": "success", "payload": { "id": "6690...", "title": "Torneo Apertura", "division": "A", "gender": "femenino", "date": "2026-11-15T10:00:00.000Z", "location": "Club Ferro", "capacity": 12, "status": "published", "organizer": "665f2a..." } }
+```
+
+Response `400` – datos inválidos:
+
+```json
+{ "status": "error", "message": "Datos inválidos en: capacity, date" }
+```
+
+Response `401` sin sesión / `403` con rol `user`:
+
+```json
+{ "status": "error", "message": "No autenticado" }
+{ "status": "error", "message": "No tenés permisos para realizar esta acción" }
+```
+
+### `PUT /api/events/:eventId` 🔒 dueño o admin
+
+Recibe los mismos campos que `POST /api/events` (todos opcionales) y devuelve el torneo actualizado (`200`).
+
+Response `403` – un organizer intenta modificar un torneo de otro organizer:
+
+```json
+{ "status": "error", "message": "No tenés permisos para modificar este evento" }
+```
+
+Response `404`:
+
+```json
+{ "status": "error", "message": "Evento no encontrado" }
+```
+
+### `PATCH /api/events/:eventId/cancel` 🔒 dueño o admin
+
+Pasa el torneo a `status: "cancelled"` y lo devuelve (`200`). Mismos errores `401`, `403` y `404` que el `PUT`.
 
 ### `POST /api/sessions/register`
 
@@ -267,6 +346,117 @@ Response `200` – borra la cookie `currentUser`:
 { "status": "success", "message": "Sesión cerrada" }
 ```
 
+### `GET /api/users` 🔒 admin
+
+Response `200` (nunca incluye `password`):
+
+```json
+{ "status": "success", "payload": [ { "id": "665f2a...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com", "role": "user" } ] }
+```
+
+Response `403` con rol `user` u `organizer`:
+
+```json
+{ "status": "error", "message": "No tenés permisos para realizar esta acción" }
+```
+
+### `PATCH /api/users/:uid/role` 🔒 admin
+
+Request:
+
+```json
+{ "role": "organizer" }
+```
+
+Response `200`:
+
+```json
+{ "status": "success", "payload": { "id": "665f2a...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com", "role": "organizer" } }
+```
+
+Response `400`:
+
+```json
+{ "status": "error", "message": "El rol indicado no es válido" }
+{ "status": "error", "message": "No podés cambiar tu propio rol" }
+```
+
+Response `404`:
+
+```json
+{ "status": "error", "message": "Usuario no encontrado" }
+```
+
+## Roles y autorización
+
+### Roles
+
+| Rol         | En la liga de vóley | Cómo se obtiene |
+|-------------|---------------------|-----------------|
+| `user`      | Jugador/a: consulta torneos (más adelante se inscribe) | Por defecto al registrarse |
+| `organizer` | Organizador/a de torneos: crea y gestiona sus torneos | Lo asigna un `admin` |
+| `admin`     | Administración de la liga: gestiona todo | Lo asigna otro `admin` o el script `set-role` |
+
+El **registro público siempre crea `user`**: si el body trae `"role": "admin"` u `"organizer"`, se ignora.
+
+### Matriz de permisos
+
+| Acción                              | `user` | `organizer` | `admin` | Ruta |
+|-------------------------------------|:------:|:-----------:|:-------:|------|
+| Consultar torneos publicados        | ✅ | ✅ | ✅ | `GET /api/events` |
+| Crear torneos                       | ❌ | ✅ | ✅ | `POST /api/events` |
+| Modificar / cancelar torneos propios | ❌ | ✅ | ✅ | `PUT /api/events/:eventId`, `PATCH /api/events/:eventId/cancel` |
+| Modificar / cancelar cualquier torneo | ❌ | ❌ | ✅ | ídem |
+| Ver todos los usuarios              | ❌ | ❌ | ✅ | `GET /api/users` |
+| Cambiar el rol de un usuario        | ❌ | ❌ | ✅ | `PATCH /api/users/:uid/role` |
+
+La matriz vive en código en [`src/config/permissions.js`](src/config/permissions.js). Las rutas usan esas listas en lugar de escribir los roles a mano:
+
+```js
+router.post('/', authenticate, authorizeRoles(...PERMISSIONS.createEvent), createEvent)
+```
+
+### Middlewares
+
+Las rutas protegidas encadenan los middlewares en este orden: **autenticación → autorización por rol → autorización por propiedad → controller**.
+
+| Middleware | Archivo | Qué hace | Error |
+|------------|---------|----------|-------|
+| `authenticate` | [`auth.middleware.js`](src/middlewares/auth.middleware.js) | Ejecuta la estrategia `current` de Passport: lee el JWT de la cookie, lo valida y deja `{ id, email, role }` en `req.user` | `401` |
+| `authorizeRoles(...roles)` | [`authorize.middleware.js`](src/middlewares/authorize.middleware.js) | Recibe los roles permitidos y los compara con `req.user.role`. Si no hay una regla que permita la acción, la rechaza (cerrado por defecto) | `403` |
+| `authorizeEventOwnerOrAdmin` | [`authorize.middleware.js`](src/middlewares/authorize.middleware.js) | Busca el torneo y permite seguir solo si `req.user` es su `organizer` o tiene `manageAnyEvent` (admin) | `403` / `404` |
+
+```js
+router.put(
+  '/:eventId',
+  authenticate,                                    // 401 si no hay sesión
+  authorizeRoles(...PERMISSIONS.manageOwnEvent),   // 403 si es user
+  authorizeEventOwnerOrAdmin,                      // 403 si el torneo es de otro organizer
+  updateEvent
+)
+```
+
+El rol se lee **de la base de datos** en cada request (la estrategia `current` busca al usuario), no del JWT. Por eso, si un admin cambia el rol de alguien, el cambio aplica en la próxima petición, sin volver a hacer login.
+
+### Diferencia entre 401 y 403
+
+| Código | Significado | Cuándo | Mensaje |
+|--------|-------------|--------|---------|
+| **401 Unauthorized** | **No autenticado**: el servidor no sabe quién sos | No hay cookie, o el token es inválido, manipulado o expiró | `No autenticado` |
+| **403 Forbidden** | **Sin permiso**: el servidor sabe quién sos, pero tu rol no puede hacer esa acción | Un `user` crea un torneo, un `organizer` entra a `/api/users` o modifica un torneo ajeno | `No tenés permisos para realizar esta acción` / `No tenés permisos para modificar este evento` |
+
+Con un 401 la solución es iniciar sesión. Con un 403, volver a loguearse no cambia nada: hace falta otro rol.
+
+### Crear el primer admin
+
+Como el registro público siempre crea `user`, el primer `admin` se asigna con un script. El usuario tiene que estar registrado antes:
+
+```bash
+npm run set-role -- admin@mail.com admin
+```
+
+Después, ese admin puede asignar roles desde la API con `PATCH /api/users/:uid/role` (por ejemplo, para convertir a alguien en `organizer`). El script acepta cualquier rol: `user`, `organizer` o `admin`.
+
 ## Autenticación con Passport
 
 Toda la autenticación pasa por estrategias de **Passport.js**, centralizadas en [`src/config/passport.config.js`](src/config/passport.config.js). En `app.js` solo se inicializa Passport (`app.use(initializePassport())`), y ninguna estrategia vive ahí. Todas se usan con `session: false`: la sesión la representa el JWT de la cookie, no una sesión en memoria del servidor.
@@ -320,6 +510,15 @@ Para un provider nuevo alcanza con crear su estrategia en ese archivo, sumarla a
 4. `POST /api/sessions/logout` → `200`
 5. `GET /api/sessions/current` → `401`
 
+**Roles:**
+
+1. Registrar tres usuarios, por ejemplo `admin@mail.com`, `organizador@mail.com` y `jugadora@mail.com`.
+2. Convertir al primero en admin: `npm run set-role -- admin@mail.com admin`.
+3. Login como admin → `GET /api/users` (`200`) para ver los ids → `PATCH /api/users/<id del organizador>/role` con `{ "role": "organizer" }`.
+4. Login como jugadora → `POST /api/events` → `403`. `GET /api/users` → `403`.
+5. Login como organizador → `POST /api/events` → `201`. `GET /api/users` → `403`.
+6. Con otro organizer, `PUT /api/events/<id>` de un torneo ajeno → `403`.
+
 **Con curl:** `-c` guarda la cookie en un archivo y `-b` la envía.
 
 ```bash
@@ -349,6 +548,19 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | `current` con token firmado con otra clave o con `alg: none` | `401` – No autenticado |
 | `current` con token válido de un usuario que ya fue borrado | `401` – No autenticado |
 | Login con credenciales en la query string en vez del body | `400` – Email y contraseña son obligatorios |
+| `POST /api/events` con rol `user` | `403` – No tenés permisos para realizar esta acción |
+| `POST /api/events` con rol `organizer` | `201`, con `organizer` = usuario autenticado |
+| `GET /api/users` con rol `organizer` | `403` |
+| `GET /api/users` con rol `admin` | `200`, sin `password` |
+| Rutas privadas (`POST /api/events`, `PUT /api/events/:id`, `GET /api/users`, `/current`) sin cookie | `401` – No autenticado |
+| `organizer` modifica o cancela un torneo de otro organizer | `403` – No tenés permisos para modificar este evento |
+| `organizer` modifica su propio torneo / `admin` modifica uno ajeno | `200` |
+| Body con `organizer` de otro usuario al crear o modificar | Se ignora |
+| Torneo inexistente o id inválido | `404` – Evento no encontrado |
+| Torneo con datos inválidos | `400` – Datos inválidos en: ... |
+| `organizer` intenta cambiar un rol | `403` |
+| `admin` cambia su propio rol / rol inexistente | `400` |
+| `admin` promueve un `user` a `organizer` | `200` y la misma sesión ya puede crear torneos |
 
 ## Entregas
 
@@ -358,7 +570,7 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | 2 | Registro seguro de usuarios | ✅ |
 | 3 | Autenticación con JWT y cookies | ✅ |
 | 4 | Autenticación centralizada con Passport | ✅ |
-| 5 | Roles y autorización | ⏳ |
+| 5 | Roles y autorización | ✅ |
 | 6 | Entidad events y lógica de negocio | ⏳ |
 | 7 | Tickets, inscripciones y control de cupos | ⏳ |
 

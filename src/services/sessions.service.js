@@ -1,4 +1,6 @@
 import { usersRepository } from '../repositories/users.repository.js'
+import { toPublicUser } from './users.service.js'
+import { ROLES } from '../config/permissions.js'
 import { createHash, isValidPassword } from '../utils/hash.js'
 import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
 import { normalizeEmail } from '../utils/validators.js'
@@ -8,14 +10,6 @@ const DUPLICATE_KEY_ERROR = 11000
 // Hash de una contraseña aleatoria: se compara cuando el email no existe para que
 // el tiempo de respuesta no revele si el usuario está registrado
 const DUMMY_PASSWORD_HASH = '$2b$10$Lcoc7i4TDjZadwqK/Wij5eeQM5AX0xmNNkwprgqN5gLyoKM/uk2IS'
-
-const toPublicUser = (user) => ({
-  id: user._id.toString(),
-  first_name: user.first_name,
-  last_name: user.last_name,
-  email: user.email,
-  role: user.role
-})
 
 const toSessionUser = (user) => ({
   id: user._id.toString(),
@@ -42,7 +36,7 @@ class SessionsService {
         last_name: last_name.trim(),
         email: normalizedEmail,
         password: await createHash(password),
-        role: 'user'
+        role: ROLES.USER
       })
 
       return toPublicUser(newUser)
