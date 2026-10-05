@@ -21,8 +21,8 @@ Cómo se relacionan las entidades del curso con la temática:
 | Entidad del curso | En este proyecto |
 |-------------------|------------------|
 | `User`            | Jugadores, organizadores de torneos y administradores |
-| `Event`           | Torneo o fecha de una liga (división + rama) |
-| `Category`        | Liga (A–E, femenino / masculino) |
+| `Event`           | Torneo o fecha de una liga |
+| `category` del evento | Liga: división + rama (`A-femenino` … `E-masculino`) |
 | `Ticket`          | Inscripción a un torneo |
 
 **Roles:** `admin` (gestiona todo el sistema), `organizer` (crea y administra torneos) y `user` (jugador que consulta torneos y se inscribe).
@@ -96,6 +96,7 @@ CoderHouse_Backend2/
 │   ├── server.js               # valida el entorno, conecta la base y levanta el servidor
 │   ├── config/
 │   │   ├── config.js           # variables de entorno (dotenv) y opciones de la cookie
+│   │   ├── constants.js        # estados, ligas, transiciones de estado y paginación de eventos
 │   │   ├── database.js         # conexión a MongoDB
 │   │   ├── passport.config.js  # estrategias de Passport: register, login y current
 │   │   └── permissions.js      # roles y matriz de permisos
@@ -110,7 +111,7 @@ CoderHouse_Backend2/
 │   │   ├── sessions.controller.js
 │   │   └── users.controller.js
 │   ├── services/
-│   │   ├── events.service.js
+│   │   ├── events.service.js       # reglas de negocio de torneos, filtros y paginación
 │   │   ├── sessions.service.js     # reglas de negocio: alta de usuario, credenciales, usuario de la sesión
 │   │   └── users.service.js        # listado de usuarios y cambio de rol
 │   ├── repositories/
@@ -123,7 +124,7 @@ CoderHouse_Backend2/
 │   │   ├── User.js
 │   │   └── Event.js
 │   ├── middlewares/
-│   │   ├── auth.middleware.js      # authenticate (401) y passportCall
+│   │   ├── auth.middleware.js      # authenticate (401), optionalAuthenticate y passportCall
 │   │   ├── authorize.middleware.js # authorizeRoles (403) y authorizeEventOwnerOrAdmin
 │   │   ├── notFound.middleware.js
 │   │   └── errorHandler.middleware.js
@@ -161,10 +162,11 @@ Cliente → Router → passportCall('register' | 'login' | 'current') → Strate
 |--------|-------------------------------|-----------------------------------------------|--------|
 | GET    | `/`                           | Página de inicio para probar la API           | Pública |
 | GET    | `/api/health`                 | Estado del servidor                           | Pública |
-| GET    | `/api/events`                 | Listado de torneos publicados                 | Pública |
+| GET    | `/api/events`                 | Listado de torneos con filtros, paginación y orden | Pública |
+| GET    | `/api/events/:id`             | Detalle de un torneo                          | Pública (los borradores solo los ve su dueño o un admin) |
 | POST   | `/api/events`                 | Crear un torneo                               | 🔒 `organizer`, `admin` |
-| PUT    | `/api/events/:eventId`        | Modificar un torneo                           | 🔒 dueño (`organizer`) o `admin` |
-| PATCH  | `/api/events/:eventId/cancel` | Cancelar un torneo                            | 🔒 dueño (`organizer`) o `admin` |
+| PUT    | `/api/events/:id`             | Modificar los datos de un torneo              | 🔒 dueño (`organizer`) o `admin` |
+| PATCH  | `/api/events/:id/status`      | Cambiar el estado (publicar, cancelar, finalizar) | 🔒 dueño (`organizer`) o `admin` |
 | POST   | `/api/sessions/register`      | Registro de usuario                           | Pública |
 | POST   | `/api/sessions/login`         | Login: genera el JWT y lo guarda en la cookie | Pública |
 | GET    | `/api/sessions/current`       | Datos del usuario autenticado                 | 🔒 cualquier usuario con sesión |
@@ -184,75 +186,164 @@ Response `200`:
 { "status": "ok", "message": "Servidor activo" }
 ```
 
-### `GET /api/events`
+## Torneos (eventos)
 
-Devuelve solo los torneos con `status: "published"`.
+Un torneo es una fecha o competencia de una liga. Su `category` es la **liga**, que combina división y rama:
 
-Response `200`:
+`A-femenino`, `A-masculino`, `B-femenino`, `B-masculino`, `C-femenino`, `C-masculino`, `D-femenino`, `D-masculino`, `E-femenino`, `E-masculino`
 
-```json
-{ "status": "success", "payload": [ { "id": "6690...", "title": "Torneo Apertura", "division": "A", "gender": "femenino", "status": "published", "organizer": "665f2a...", "...": "..." } ] }
-```
+### Modelo `Event`
 
-### `POST /api/events` 🔒 organizer, admin
+| Campo         | Tipo     | Obligatorio | Reglas |
+|---------------|----------|:-----------:|--------|
+| `title`       | string   | ✅ | |
+| `description` | string   | ✅ | |
+| `category`    | string   | ✅ | Una de las ligas de arriba |
+| `date`        | fecha    | ✅ | ISO 8601 (`2026-11-15T10:00:00Z` o `2026-11-15`). Tiene que ser **futura** |
+| `location`    | string   | ✅ | Sede |
+| `capacity`    | number   | ✅ | Cupo de equipos: entero **mayor a 0** |
+| `price`       | number   | | Inscripción por equipo: **mayor o igual a 0** (por defecto `0`) |
+| `status`      | string   | | `draft`, `published`, `cancelled` o `finished` (por defecto `draft`) |
+| `organizer`   | ObjectId | automático | **Referencia** al `User` que lo creó (no un objeto embebido). Se toma de `req.user`, nunca del body |
 
-| Campo         | Tipo   | Obligatorio | Reglas |
-|---------------|--------|:-----------:|--------|
-| `title`       | string | ✅ | |
-| `division`    | string | ✅ | `A`, `B`, `C`, `D` o `E` |
-| `gender`      | string | ✅ | `femenino` o `masculino` |
-| `date`        | fecha  | ✅ | ISO 8601, por ejemplo `2026-11-15T10:00:00Z` |
-| `location`    | string | ✅ | Sede |
-| `capacity`    | number | ✅ | Cupo de equipos, mínimo 1 |
-| `description` | string | | |
-| `status`      | string | | `draft` (por defecto), `published`, `cancelled` o `finished` |
+### `GET /api/events` – listado con filtros
 
-El `organizer` **no se toma del body**: siempre es el usuario autenticado.
+Pública. Todos los parámetros son opcionales:
 
-Request:
+| Parámetro  | Ejemplo | Descripción |
+|------------|---------|-------------|
+| `status`   | `published` | `published` (por defecto), `cancelled` o `finished`. Los borradores (`draft`) no son públicos |
+| `category` | `A-femenino` | Liga exacta |
+| `location` | `ferro` | Búsqueda parcial, sin distinguir mayúsculas |
+| `search`   | `apertura` | Busca en el título y la descripción |
+| `dateFrom` | `2026-11-01` | Torneos desde esa fecha (inclusive) |
+| `dateTo`   | `2026-11-30` | Torneos hasta esa fecha (inclusive: si es solo una fecha, incluye el día completo) |
+| `page`     | `2` | Página, desde 1 (por defecto `1`) |
+| `limit`    | `5` | Resultados por página (por defecto `10`, máximo `50`) |
+| `sort`     | `-date` | Campo de orden: `date` (por defecto), `price`, `title`, `capacity` o `createdAt`. Con `-` adelante es descendente |
 
-```json
-{ "title": "Torneo Apertura", "division": "A", "gender": "femenino", "date": "2026-11-15T10:00:00Z", "location": "Club Ferro", "capacity": 12, "status": "published" }
-```
+Un parámetro inválido (estado o liga inexistentes, `page=0`, fecha mal escrita, `dateFrom` posterior a `dateTo`, campo de orden no permitido) responde `400` con el detalle.
 
-Response `201`:
-
-```json
-{ "status": "success", "payload": { "id": "6690...", "title": "Torneo Apertura", "division": "A", "gender": "femenino", "date": "2026-11-15T10:00:00.000Z", "location": "Club Ferro", "capacity": 12, "status": "published", "organizer": "665f2a..." } }
-```
-
-Response `400` – datos inválidos:
-
-```json
-{ "status": "error", "message": "Datos inválidos en: capacity, date" }
-```
-
-Response `401` sin sesión / `403` con rol `user`:
+`GET /api/events?status=published&category=A-femenino&page=2&limit=5` → `200`:
 
 ```json
-{ "status": "error", "message": "No autenticado" }
-{ "status": "error", "message": "No tenés permisos para realizar esta acción" }
+{
+  "status": "success",
+  "data": [
+    { "id": "6690...", "title": "Fecha 6", "description": "Liga A femenino", "category": "A-femenino", "date": "2026-11-15T10:00:00.000Z", "location": "Club Ferro", "capacity": 12, "price": 5000, "status": "published", "organizer": "665f2a..." }
+  ],
+  "page": 2,
+  "limit": 5,
+  "total": 12,
+  "totalPages": 3
+}
 ```
 
-### `PUT /api/events/:eventId` 🔒 dueño o admin
+### `GET /api/events/:id`
 
-Recibe los mismos campos que `POST /api/events` (todos opcionales) y devuelve el torneo actualizado (`200`).
-
-Response `403` – un organizer intenta modificar un torneo de otro organizer:
-
-```json
-{ "status": "error", "message": "No tenés permisos para modificar este evento" }
-```
-
-Response `404`:
+Pública. Devuelve el torneo en `payload` (`200`). Si no existe, si el id es inválido, o si es un borrador y quien consulta no es su dueño ni un admin → `404`:
 
 ```json
 { "status": "error", "message": "Evento no encontrado" }
 ```
 
-### `PATCH /api/events/:eventId/cancel` 🔒 dueño o admin
+### `POST /api/events` 🔒 organizer, admin
 
-Pasa el torneo a `status: "cancelled"` y lo devuelve (`200`). Mismos errores `401`, `403` y `404` que el `PUT`.
+Request:
+
+```json
+{ "title": "Torneo Apertura", "description": "Fecha 1 de la liga", "category": "A-femenino", "date": "2026-11-15T10:00:00Z", "location": "Club Ferro", "capacity": 12, "price": 5000, "status": "published" }
+```
+
+`status` es opcional y solo acepta `draft` (por defecto) o `published`: un torneo nuevo no puede nacer cancelado ni finalizado.
+
+Response `201`:
+
+```json
+{ "status": "success", "payload": { "id": "6690...", "title": "Torneo Apertura", "description": "Fecha 1 de la liga", "category": "A-femenino", "date": "2026-11-15T10:00:00.000Z", "location": "Club Ferro", "capacity": 12, "price": 5000, "status": "published", "organizer": "665f2a..." } }
+```
+
+Response `400` (ejemplos):
+
+```json
+{ "status": "error", "message": "Faltan campos obligatorios: description, category" }
+{ "status": "error", "message": "La fecha del evento debe ser futura" }
+{ "status": "error", "message": "La capacidad debe ser un número entero mayor a 0" }
+{ "status": "error", "message": "El precio debe ser un número mayor o igual a 0" }
+```
+
+Response `401` sin sesión / `403` con rol `user`.
+
+### `PUT /api/events/:id` 🔒 dueño o admin
+
+Modifica los datos del torneo. Acepta los mismos campos que el `POST` (todos opcionales) con las mismas validaciones. Por ejemplo, la fecha nueva también tiene que ser futura. El `status` **no** se cambia acá, sino con `PATCH /api/events/:id/status`.
+
+Request:
+
+```json
+{ "capacity": 16, "location": "Club GEBA" }
+```
+
+Response `200` con el torneo actualizado. Errores:
+
+| Código | Caso | Mensaje |
+|--------|------|---------|
+| `400` | Datos inválidos o body con `status` | `El estado se cambia con PATCH /api/events/:id/status` |
+| `403` | Un organizer intenta modificar un torneo de otro organizer | `No tenés permisos para modificar este evento` |
+| `404` | El torneo no existe | `Evento no encontrado` |
+| `409` | El torneo está cancelado o finalizado | `No se puede modificar un evento cancelado` |
+
+### `PATCH /api/events/:id/status` 🔒 dueño o admin
+
+Request:
+
+```json
+{ "status": "cancelled" }
+```
+
+Response `200` con el torneo actualizado. **Cancelar un torneo es cambiar su estado a `cancelled`: los torneos nunca se borran de la base**, así se conserva el historial (y, más adelante, sus inscripciones).
+
+Cambios de estado permitidos:
+
+```
+draft ──────► published ──────► finished
+  │               │
+  └──► cancelled ◄┘
+```
+
+| Desde | Puede pasar a | Condición |
+|-------|---------------|-----------|
+| `draft` | `published`, `cancelled` | Para publicar, la fecha tiene que ser futura |
+| `published` | `cancelled`, `finished` | Para finalizar, la fecha ya tiene que haber pasado |
+| `cancelled` | — | Estado final |
+| `finished` | — | Estado final |
+
+Un cambio no permitido responde `409`:
+
+```json
+{ "status": "error", "message": "No se puede cambiar el estado de un evento cancelado" }
+{ "status": "error", "message": "No se puede pasar un evento de published a draft" }
+{ "status": "error", "message": "No se puede publicar un evento cuya fecha ya pasó" }
+```
+
+### Reglas de negocio
+
+Todas las reglas viven en la capa de servicios ([`events.service.js`](src/services/events.service.js)), no en las rutas ni en los controllers:
+
+- No se puede crear (ni mover) un torneo a una **fecha pasada**.
+- `capacity` tiene que ser un entero **mayor a 0** y `price` **mayor o igual a 0**.
+- Un torneo nuevo solo puede crearse como `draft` o `published`.
+- **No se puede publicar** un torneo **cancelado o finalizado**, ni uno cuya fecha ya pasó.
+- Los torneos **cancelados o finalizados no se pueden modificar**: son estados finales para conservar el historial tal como quedó. Si hay que cambiar algo, se crea un torneo nuevo.
+- Un torneo solo se puede marcar como `finished` cuando su fecha ya pasó.
+- **Cancelar no borra**: cambia el estado a `cancelled`. La API no tiene ningún `DELETE` de torneos.
+- El `organizer` siempre es el usuario autenticado que lo creó. Un `organizer` solo gestiona sus propios torneos y un `admin` puede gestionar cualquiera (lo validan los middlewares de autorización).
+- El listado nunca devuelve todo junto: siempre está paginado (máximo 50 por página).
+- Los textos de búsqueda (`location`, `search`) se escapan antes de armar la expresión regular, así un texto con caracteres especiales no puede romper ni trabar la consulta.
+
+Códigos de error: `400` datos o parámetros inválidos, `401` sin sesión, `403` sin permiso, `404` torneo inexistente, `409` la acción choca con el estado actual del torneo.
+
+## Sesiones y usuarios
 
 ### `POST /api/sessions/register`
 
@@ -405,7 +496,7 @@ El **registro público siempre crea `user`**: si el body trae `"role": "admin"` 
 |-------------------------------------|:------:|:-----------:|:-------:|------|
 | Consultar torneos publicados        | ✅ | ✅ | ✅ | `GET /api/events` |
 | Crear torneos                       | ❌ | ✅ | ✅ | `POST /api/events` |
-| Modificar / cancelar torneos propios | ❌ | ✅ | ✅ | `PUT /api/events/:eventId`, `PATCH /api/events/:eventId/cancel` |
+| Modificar / cancelar torneos propios | ❌ | ✅ | ✅ | `PUT /api/events/:id`, `PATCH /api/events/:id/status` |
 | Modificar / cancelar cualquier torneo | ❌ | ❌ | ✅ | ídem |
 | Ver todos los usuarios              | ❌ | ❌ | ✅ | `GET /api/users` |
 | Cambiar el rol de un usuario        | ❌ | ❌ | ✅ | `PATCH /api/users/:uid/role` |
@@ -425,10 +516,11 @@ Las rutas protegidas encadenan los middlewares en este orden: **autenticación �
 | `authenticate` | [`auth.middleware.js`](src/middlewares/auth.middleware.js) | Ejecuta la estrategia `current` de Passport: lee el JWT de la cookie, lo valida y deja `{ id, email, role }` en `req.user` | `401` |
 | `authorizeRoles(...roles)` | [`authorize.middleware.js`](src/middlewares/authorize.middleware.js) | Recibe los roles permitidos y los compara con `req.user.role`. Si no hay una regla que permita la acción, la rechaza (cerrado por defecto) | `403` |
 | `authorizeEventOwnerOrAdmin` | [`authorize.middleware.js`](src/middlewares/authorize.middleware.js) | Busca el torneo y permite seguir solo si `req.user` es su `organizer` o tiene `manageAnyEvent` (admin) | `403` / `404` |
+| `optionalAuthenticate` | [`auth.middleware.js`](src/middlewares/auth.middleware.js) | Para rutas públicas (`GET /api/events/:id`): si hay sesión válida completa `req.user`, y si no sigue como anónimo. Sirve para que el dueño o un admin puedan ver borradores | — |
 
 ```js
 router.put(
-  '/:eventId',
+  '/:id',
   authenticate,                                    // 401 si no hay sesión
   authorizeRoles(...PERMISSIONS.manageOwnEvent),   // 403 si es user
   authorizeEventOwnerOrAdmin,                      // 403 si el torneo es de otro organizer
@@ -548,19 +640,32 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | `current` con token firmado con otra clave o con `alg: none` | `401` – No autenticado |
 | `current` con token válido de un usuario que ya fue borrado | `401` – No autenticado |
 | Login con credenciales en la query string en vez del body | `400` – Email y contraseña son obligatorios |
-| `POST /api/events` con rol `user` | `403` – No tenés permisos para realizar esta acción |
-| `POST /api/events` con rol `organizer` | `201`, con `organizer` = usuario autenticado |
 | `GET /api/users` con rol `organizer` | `403` |
 | `GET /api/users` con rol `admin` | `200`, sin `password` |
-| Rutas privadas (`POST /api/events`, `PUT /api/events/:id`, `GET /api/users`, `/current`) sin cookie | `401` – No autenticado |
-| `organizer` modifica o cancela un torneo de otro organizer | `403` – No tenés permisos para modificar este evento |
-| `organizer` modifica su propio torneo / `admin` modifica uno ajeno | `200` |
-| Body con `organizer` de otro usuario al crear o modificar | Se ignora |
-| Torneo inexistente o id inválido | `404` – Evento no encontrado |
-| Torneo con datos inválidos | `400` – Datos inválidos en: ... |
+| Rutas privadas (`POST /api/events`, `PUT /api/events/:id`, `PATCH /api/events/:id/status`, `GET /api/users`, `/current`) sin cookie | `401` – No autenticado |
 | `organizer` intenta cambiar un rol | `403` |
 | `admin` cambia su propio rol / rol inexistente | `400` |
 | `admin` promueve un `user` a `organizer` | `200` y la misma sesión ya puede crear torneos |
+| Crear torneo con rol `user` | `403` – No tenés permisos para realizar esta acción |
+| Crear torneo con fecha pasada | `400` – La fecha del evento debe ser futura |
+| Crear torneo con `capacity: 0` / `capacity: 2.5` / `price: -1` | `400` con el detalle |
+| Crear torneo sin campos obligatorios / con `status: cancelled` | `400` |
+| Crear torneo mandando otro `organizer` en el body | `201` y se ignora: queda el usuario autenticado |
+| `organizer` modifica su propio torneo | `200` |
+| `organizer` modifica o cambia el estado de un torneo ajeno | `403` – No tenés permisos para modificar este evento |
+| `admin` modifica un torneo de otro organizer | `200` |
+| Cambiar el estado de un torneo cancelado / finalizado | `409` – No se puede cambiar el estado de un evento cancelado |
+| Modificar (`PUT`) un torneo cancelado / finalizado | `409` – No se puede modificar un evento cancelado |
+| Cancelar un torneo | `200` con `status: cancelled`, y el documento sigue en la base |
+| `published → draft`, mismo estado, `published → finished` con fecha futura, publicar con fecha pasada | `409` con el detalle |
+| `PUT` con `status` en el body / sin campos / con fecha pasada | `400` |
+| `?status=published&category=A-femenino&page=2&limit=5` | `200`, torneos 6 a 10 de 12, con `data`, `page`, `limit`, `total`, `totalPages` |
+| Filtros `location` (parcial), `search`, `dateFrom`/`dateTo`, `sort=-price` | `200` con los torneos que corresponden |
+| `?status=draft`, liga o `sort` inválidos, `page=0`, fecha inválida, `dateFrom > dateTo`, parámetro repetido | `400` con el detalle |
+| `?limit=1000` | `200` con `limit: 50` |
+| `?location=(a+)+$` (regex maliciosa) | `200`: se busca como texto literal |
+| Torneo inexistente o id inválido | `404` – Evento no encontrado |
+| Borrador por id: anónimo u otro organizer / dueño o admin | `404` / `200` |
 
 ## Entregas
 
@@ -571,7 +676,7 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | 3 | Autenticación con JWT y cookies | ✅ |
 | 4 | Autenticación centralizada con Passport | ✅ |
 | 5 | Roles y autorización | ✅ |
-| 6 | Entidad events y lógica de negocio | ⏳ |
+| 6 | Entidad events y lógica de negocio | ✅ |
 | 7 | Tickets, inscripciones y control de cupos | ⏳ |
 
 Cada entrega está marcada con un tag de git (`pre-entrega-1`, `pre-entrega-2`, …) para poder ver el código tal como quedó en cada etapa.

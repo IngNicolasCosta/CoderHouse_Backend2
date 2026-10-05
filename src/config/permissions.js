@@ -14,3 +14,7 @@ export const PERMISSIONS = {
   readUsers: [ROLES.ADMIN],
   changeUserRole: [ROLES.ADMIN]
 }
+
+// Un evento lo gestiona su organizer o un rol con manageAnyEvent (admin)
+export const canManageEvent = (user, event) =>
+  Boolean(user) && (PERMISSIONS.manageAnyEvent.includes(user.role) || event.organizer === user.id)

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose'
+import { EVENT_CATEGORIES, EVENT_STATUS } from '../config/constants.js'
 
 const eventSchema = new mongoose.Schema(
   {
@@ -9,16 +10,12 @@ const eventSchema = new mongoose.Schema(
     },
     description: {
       type: String,
+      required: true,
       trim: true
     },
-    division: {
+    category: {
       type: String,
-      enum: ['A', 'B', 'C', 'D', 'E'],
-      required: true
-    },
-    gender: {
-      type: String,
-      enum: ['femenino', 'masculino'],
+      enum: EVENT_CATEGORIES,
       required: true
     },
     date: {
@@ -35,10 +32,15 @@ const eventSchema = new mongoose.Schema(
       required: true,
       min: 1
     },
+    price: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
     status: {
       type: String,
-      enum: ['draft', 'published', 'cancelled', 'finished'],
-      default: 'draft'
+      enum: Object.values(EVENT_STATUS),
+      default: EVENT_STATUS.DRAFT
     },
     organizer: {
       type: mongoose.Schema.Types.ObjectId,

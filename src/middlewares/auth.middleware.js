@@ -22,3 +22,13 @@ export const passportCall = (strategy, badRequestMessage = ERROR_MESSAGES.missin
 
 // Autenticación: valida el JWT de la cookie y deja { id, email, role } en req.user (401 si no hay sesión)
 export const authenticate = passportCall('current')
+
+// Autenticación opcional para rutas públicas: si hay una sesión válida completa
+// req.user, y si no la hay la petición sigue igual como anónima
+export const optionalAuthenticate = (req, res, next) => {
+  passport.authenticate('current', { session: false }, (error, user) => {
+    if (error) return next(error)
+    if (user) req.user = user
+    next()
+  })(req, res, next)
+}

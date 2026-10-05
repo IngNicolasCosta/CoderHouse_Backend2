@@ -5,8 +5,12 @@ class EventsRepository {
     this.dao = dao
   }
 
-  getPublished () {
-    return this.dao.find({ status: 'published' })
+  async getPaginated (filter, { sort, page, limit }) {
+    const [events, total] = await Promise.all([
+      this.dao.find(filter, { sort, skip: (page - 1) * limit, limit }),
+      this.dao.count(filter)
+    ])
+    return { events, total }
   }
 
   getById (id) {

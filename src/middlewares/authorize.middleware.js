@@ -1,4 +1,4 @@
-import { PERMISSIONS } from '../config/permissions.js'
+import { canManageEvent } from '../config/permissions.js'
 import { eventsService } from '../services/events.service.js'
 import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
 
@@ -19,12 +19,9 @@ export const authorizeRoles = (...allowedRoles) => (req, res, next) => {
 // Autorización por propiedad: el organizer solo puede gestionar sus propios
 // eventos; los roles con manageAnyEvent (admin) pueden gestionar cualquiera
 export const authorizeEventOwnerOrAdmin = async (req, res, next) => {
-  const event = await eventsService.getEventById(req.params.eventId)
+  const event = await eventsService.findEventOrFail(req.params.id)
 
-  const canManageAny = PERMISSIONS.manageAnyEvent.includes(req.user.role)
-  const isOwner = event.organizer === req.user.id
-
-  if (!canManageAny && !isOwner) {
+  if (!canManageEvent(req.user, event)) {
     throw new AppError(ERROR_MESSAGES.eventForbidden, 403)
   }
 

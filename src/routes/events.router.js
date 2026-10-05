@@ -1,6 +1,12 @@
 import { Router } from 'express'
-import { getEvents, createEvent, updateEvent, cancelEvent } from '../controllers/events.controller.js'
-import { authenticate } from '../middlewares/auth.middleware.js'
+import {
+  getEvents,
+  getEventById,
+  createEvent,
+  updateEvent,
+  changeEventStatus
+} from '../controllers/events.controller.js'
+import { authenticate, optionalAuthenticate } from '../middlewares/auth.middleware.js'
 import { authorizeRoles, authorizeEventOwnerOrAdmin } from '../middlewares/authorize.middleware.js'
 import { PERMISSIONS } from '../config/permissions.js'
 
@@ -8,10 +14,12 @@ const router = Router()
 
 router.get('/', getEvents)
 
+router.get('/:id', optionalAuthenticate, getEventById)
+
 router.post('/', authenticate, authorizeRoles(...PERMISSIONS.createEvent), createEvent)
 
 router.put(
-  '/:eventId',
+  '/:id',
   authenticate,
   authorizeRoles(...PERMISSIONS.manageOwnEvent),
   authorizeEventOwnerOrAdmin,
@@ -19,11 +27,11 @@ router.put(
 )
 
 router.patch(
-  '/:eventId/cancel',
+  '/:id/status',
   authenticate,
   authorizeRoles(...PERMISSIONS.manageOwnEvent),
   authorizeEventOwnerOrAdmin,
-  cancelEvent
+  changeEventStatus
 )
 
 export default router

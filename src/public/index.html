@@ -10,7 +10,7 @@
   <nav class="navbar navbar-dark bg-primary">
     <div class="container">
       <span class="navbar-brand fw-bold">🏐 Liga de Vóley API</span>
-      <span class="badge text-bg-light">Pre-entrega 5</span>
+      <span class="badge text-bg-light">Pre-entrega 6</span>
     </div>
   </nav>
 
@@ -38,10 +38,11 @@
               </thead>
               <tbody>
                 <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/health</code></td><td>Pública</td></tr>
-                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/events</code></td><td>Pública</td></tr>
+                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/events</code></td><td>Pública (filtros y paginación)</td></tr>
+                <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/events/:id</code></td><td>Pública</td></tr>
                 <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/events</code></td><td>organizer, admin</td></tr>
-                <tr><td><span class="badge text-bg-info">PUT</span></td><td><code>/api/events/:eventId</code></td><td>dueño o admin</td></tr>
-                <tr><td><span class="badge text-bg-secondary">PATCH</span></td><td><code>/api/events/:eventId/cancel</code></td><td>dueño o admin</td></tr>
+                <tr><td><span class="badge text-bg-info">PUT</span></td><td><code>/api/events/:id</code></td><td>dueño o admin</td></tr>
+                <tr><td><span class="badge text-bg-secondary">PATCH</span></td><td><code>/api/events/:id/status</code></td><td>dueño o admin</td></tr>
                 <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/register</code></td><td>Pública</td></tr>
                 <tr><td><span class="badge text-bg-warning">POST</span></td><td><code>/api/sessions/login</code></td><td>Pública</td></tr>
                 <tr><td><span class="badge text-bg-success">GET</span></td><td><code>/api/sessions/current</code></td><td>Con sesión</td></tr>
@@ -134,7 +135,7 @@
         <div class="card shadow-sm h-100">
           <div class="card-header fw-semibold">Crear torneo <span class="badge text-bg-warning ms-1">organizer / admin</span></div>
           <div class="card-body">
-            <form class="row g-3" data-endpoint="/api/events" data-number-fields="capacity" novalidate>
+            <form class="row g-3" data-endpoint="/api/events" data-number-fields="capacity,price" novalidate>
               <div class="col-md-8">
                 <label for="event_title" class="form-label">Título</label>
                 <input type="text" class="form-control" id="event_title" name="title" placeholder="Torneo Apertura">
@@ -146,26 +147,21 @@
                   <option value="draft">Borrador</option>
                 </select>
               </div>
-              <div class="col-md-3">
-                <label for="event_division" class="form-label">División</label>
-                <select class="form-select" id="event_division" name="division">
-                  <option>A</option><option>B</option><option>C</option><option>D</option><option>E</option>
-                </select>
+              <div class="col-md-4">
+                <label for="event_category" class="form-label">Liga</label>
+                <select class="form-select" id="event_category" name="category"><option value="A-femenino">Liga A Femenino</option><option value="A-masculino">Liga A Masculino</option><option value="B-femenino">Liga B Femenino</option><option value="B-masculino">Liga B Masculino</option><option value="C-femenino">Liga C Femenino</option><option value="C-masculino">Liga C Masculino</option><option value="D-femenino">Liga D Femenino</option><option value="D-masculino">Liga D Masculino</option><option value="E-femenino">Liga E Femenino</option><option value="E-masculino">Liga E Masculino</option></select>
               </div>
-              <div class="col-md-3">
-                <label for="event_gender" class="form-label">Rama</label>
-                <select class="form-select" id="event_gender" name="gender">
-                  <option value="femenino">Femenino</option>
-                  <option value="masculino">Masculino</option>
-                </select>
-              </div>
-              <div class="col-md-3">
+              <div class="col-md-4">
                 <label for="event_date" class="form-label">Fecha</label>
                 <input type="date" class="form-control" id="event_date" name="date">
               </div>
-              <div class="col-md-3">
-                <label for="event_capacity" class="form-label">Cupo (equipos)</label>
+              <div class="col-md-2">
+                <label for="event_capacity" class="form-label">Cupo</label>
                 <input type="number" class="form-control" id="event_capacity" name="capacity" min="1" value="12">
+              </div>
+              <div class="col-md-2">
+                <label for="event_price" class="form-label">Precio</label>
+                <input type="number" class="form-control" id="event_price" name="price" min="0" value="0">
               </div>
               <div class="col-md-6">
                 <label for="event_location" class="form-label">Sede</label>
@@ -173,12 +169,101 @@
               </div>
               <div class="col-md-6">
                 <label for="event_description" class="form-label">Descripción</label>
-                <input type="text" class="form-control" id="event_description" name="description">
+                <input type="text" class="form-control" id="event_description" name="description" placeholder="Fecha 1 de la liga">
               </div>
               <div class="col-12">
                 <button type="submit" class="btn btn-warning">POST /api/events</button>
               </div>
             </form>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-4">
+        <div class="card shadow-sm h-100">
+          <div class="card-header fw-semibold">Cambiar estado <span class="badge text-bg-secondary ms-1">dueño / admin</span></div>
+          <div class="card-body">
+            <form class="row g-3" data-endpoint="/api/events/{{id}}/status" data-method="PATCH" novalidate>
+              <div class="col-12">
+                <label for="status_event_id" class="form-label">Id del torneo</label>
+                <input type="text" class="form-control font-monospace" id="status_event_id" name="id">
+              </div>
+              <div class="col-12">
+                <label for="status_value" class="form-label">Nuevo estado</label>
+                <select class="form-select" id="status_value" name="status">
+                  <option value="published">published</option>
+                  <option value="cancelled">cancelled</option>
+                  <option value="finished">finished</option>
+                </select>
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-secondary">PATCH /api/events/:id/status</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-5">
+        <div class="card shadow-sm h-100">
+          <div class="card-header fw-semibold">Buscar torneos</div>
+          <div class="card-body">
+            <form class="row g-3" data-endpoint="/api/events" data-method="GET" data-output="events-response" novalidate>
+              <div class="col-sm-6">
+                <label for="filter_status" class="form-label">Estado</label>
+                <select class="form-select" id="filter_status" name="status">
+                  <option value="published">published</option>
+                  <option value="cancelled">cancelled</option>
+                  <option value="finished">finished</option>
+                </select>
+              </div>
+              <div class="col-sm-6">
+                <label for="filter_category" class="form-label">Liga</label>
+                <select class="form-select" id="filter_category" name="category"><option value="">Todas</option><option value="A-femenino">Liga A Femenino</option><option value="A-masculino">Liga A Masculino</option><option value="B-femenino">Liga B Femenino</option><option value="B-masculino">Liga B Masculino</option><option value="C-femenino">Liga C Femenino</option><option value="C-masculino">Liga C Masculino</option><option value="D-femenino">Liga D Femenino</option><option value="D-masculino">Liga D Masculino</option><option value="E-femenino">Liga E Femenino</option><option value="E-masculino">Liga E Masculino</option></select>
+              </div>
+              <div class="col-12">
+                <label for="filter_location" class="form-label">Sede (búsqueda parcial)</label>
+                <input type="text" class="form-control" id="filter_location" name="location">
+              </div>
+              <div class="col-sm-6">
+                <label for="filter_from" class="form-label">Desde</label>
+                <input type="date" class="form-control" id="filter_from" name="dateFrom">
+              </div>
+              <div class="col-sm-6">
+                <label for="filter_to" class="form-label">Hasta</label>
+                <input type="date" class="form-control" id="filter_to" name="dateTo">
+              </div>
+              <div class="col-sm-4">
+                <label for="filter_sort" class="form-label">Orden</label>
+                <select class="form-select" id="filter_sort" name="sort">
+                  <option value="date">Fecha ↑</option>
+                  <option value="-date">Fecha ↓</option>
+                  <option value="price">Precio ↑</option>
+                  <option value="-price">Precio ↓</option>
+                  <option value="title">Título</option>
+                </select>
+              </div>
+              <div class="col-sm-4">
+                <label for="filter_page" class="form-label">Página</label>
+                <input type="number" class="form-control" id="filter_page" name="page" min="1" value="1">
+              </div>
+              <div class="col-sm-4">
+                <label for="filter_limit" class="form-label">Por página</label>
+                <input type="number" class="form-control" id="filter_limit" name="limit" min="1" max="50" value="10">
+              </div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-primary">GET /api/events</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-7">
+        <div class="card shadow-sm h-100">
+          <div class="card-header fw-semibold">Resultado de la búsqueda</div>
+          <div class="card-body">
+            <pre id="events-response" class="bg-dark text-light rounded p-3 small mb-0" style="max-height: 32rem; overflow: auto;">Usá el buscador para listar torneos</pre>
           </div>
         </div>
       </div>
@@ -206,8 +291,29 @@ ${JSON.stringify(data, null, 2)}`
       return data
     }
 
+    // Arma la petición de un formulario: reemplaza {{campo}} en la URL, y en GET manda los campos como query
+    const sendForm = (form) => {
+      const data = formToJson(form)
+      const url = form.dataset.endpoint.replace(/\{\{(\w+)\}\}/g, (match, field) => {
+        const value = encodeURIComponent(data[field] ?? '')
+        delete data[field]
+        return value
+      })
+      const method = form.dataset.method || 'POST'
+
+      if (method === 'GET') {
+        const params = new URLSearchParams(Object.entries(data).filter(([, value]) => value !== ''))
+        return fetch(params.size > 0 ? `${url}?${params}` : url)
+      }
+
+      return fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      })
+    }
+
     const output = document.getElementById('response')
-    const formOutput = document.getElementById('form-response')
 
     document.querySelectorAll('button[data-endpoint]').forEach((button) => {
       button.addEventListener('click', () => {
@@ -218,11 +324,8 @@ ${JSON.stringify(data, null, 2)}`
     document.querySelectorAll('form[data-endpoint]').forEach((form) => {
       form.addEventListener('submit', (event) => {
         event.preventDefault()
-        showResponse(formOutput, fetch(form.dataset.endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formToJson(form))
-        }))
+        const target = document.getElementById(form.dataset.output || 'form-response')
+        showResponse(target, sendForm(form))
       })
     })
   </script>
