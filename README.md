@@ -33,6 +33,7 @@ Cómo se relacionan las entidades del curso con la temática:
 - Express 5
 - MongoDB Atlas + Mongoose
 - bcrypt (hash de contraseñas)
+- Passport.js (`passport-local` y `passport-jwt`)
 - jsonwebtoken (JWT)
 - cookie-parser (cookie de autenticación)
 - dotenv
@@ -88,11 +89,12 @@ Con el servidor levantado, en `http://localhost:8080/` hay una página de inicio
 ```
 CoderHouse_Backend2/
 ├── src/
-│   ├── app.js                  # configura Express, middlewares y rutas (NO levanta el server)
+│   ├── app.js                  # configura Express, middlewares, Passport y rutas (NO levanta el server)
 │   ├── server.js               # valida el entorno, conecta la base y levanta el servidor
 │   ├── config/
 │   │   ├── config.js           # variables de entorno (dotenv) y opciones de la cookie
-│   │   └── database.js         # conexión a MongoDB
+│   │   ├── database.js         # conexión a MongoDB
+│   │   └── passport.config.js  # estrategias de Passport: register, login y current
 │   ├── routes/
 │   │   ├── health.router.js
 │   │   ├── events.router.js
@@ -103,7 +105,7 @@ CoderHouse_Backend2/
 │   │   └── sessions.controller.js
 │   ├── services/
 │   │   ├── events.service.js
-│   │   └── sessions.service.js     # reglas de negocio de registro y login
+│   │   └── sessions.service.js     # reglas de negocio: alta de usuario, credenciales, usuario de la sesión
 │   ├── repositories/
 │   │   ├── events.repository.js
 │   │   └── users.repository.js
@@ -114,16 +116,14 @@ CoderHouse_Backend2/
 │   │   ├── User.js
 │   │   └── Event.js
 │   ├── middlewares/
-│   │   ├── auth.middleware.js              # lee la cookie, verifica el JWT y completa req.user
-│   │   ├── validateRegister.middleware.js  # validación de entrada del registro
-│   │   ├── validateLogin.middleware.js     # validación de entrada del login
+│   │   ├── auth.middleware.js      # passportCall: ejecuta una estrategia y responde errores en JSON
 │   │   ├── notFound.middleware.js
 │   │   └── errorHandler.middleware.js
 │   ├── utils/
 │   │   ├── hash.js             # createHash / isValidPassword (bcrypt)
-│   │   ├── jwt.js              # generateToken / verifyToken
-│   │   ├── validators.js       # validación y normalización de email
-│   │   └── errors.js           # AppError con código HTTP
+│   │   ├── jwt.js              # generateToken (lo usa el controller de login)
+│   │   ├── validators.js       # validación de datos de registro/login y normalización de email
+│   │   └── errors.js           # AppError con código HTTP y mensajes de error
 │   └── public/
 │       └── index.html          # página de inicio (Bootstrap)
 ├── .env.example
@@ -136,6 +136,13 @@ Flujo de una petición:
 
 ```
 Cliente → Router → Middleware → Controller → Service → Repository → DAO → Model (MongoDB)
+```
+
+En las rutas de sesión, el middleware es una estrategia de Passport:
+
+```
+Cliente → Router → passportCall('register' | 'login' | 'current') → Strategy → Service → Repository → DAO → Model
+                                                                 ↘ req.user → Controller → Respuesta
 ```
 
 ## Rutas disponibles
@@ -260,7 +267,37 @@ Response `200` – borra la cookie `currentUser`:
 { "status": "success", "message": "Sesión cerrada" }
 ```
 
-## Autenticación
+## Autenticación con Passport
+
+Toda la autenticación pasa por estrategias de **Passport.js**, centralizadas en [`src/config/passport.config.js`](src/config/passport.config.js). En `app.js` solo se inicializa Passport (`app.use(initializePassport())`), y ninguna estrategia vive ahí. Todas se usan con `session: false`: la sesión la representa el JWT de la cookie, no una sesión en memoria del servidor.
+
+| Estrategia | Tipo | Ruta | Qué hace | Deja en `req.user` |
+|------------|------|------|----------|--------------------|
+| `register` | `passport-local` | `POST /api/sessions/register` | Valida los campos, normaliza el email, rechaza duplicados, hashea la contraseña con bcrypt y crea el usuario con rol `user` | Usuario creado (sin `password`) |
+| `login` | `passport-local` | `POST /api/sessions/login` | Valida que vengan email y contraseña y compara la contraseña con bcrypt. Si algo no coincide: `401 Credenciales inválidas` | `{ id, email, role }` |
+| `current` | `passport-jwt` | `GET /api/sessions/current` | Extrae el JWT de la cookie `currentUser`, verifica firma y expiración y confirma en la base que el usuario sigue existiendo | `{ id, email, role }` |
+
+- **Quién genera el JWT:** el **controller** de login, no la estrategia. La estrategia solo valida las credenciales; después el controller firma el token con `req.user` y setea la cookie.
+- **Logout:** no pasa por Passport. Solo borra la cookie.
+- **Rutas limpias:** cada ruta delega en `passportCall(estrategia)` ([`auth.middleware.js`](src/middlewares/auth.middleware.js)). Este middleware ejecuta `passport.authenticate(estrategia, { session: false }, callback)` y, si la estrategia falla, deriva el error al manejador central. Así se mantienen las mismas respuestas JSON (`400`, `401`, `409`) de las entregas anteriores, en lugar del `401 Unauthorized` en texto plano que Passport responde por defecto.
+- **Credenciales solo por body:** `passport-local` también acepta email y contraseña por query string (`?email=...&password=...`). Las estrategias validan siempre `req.body` para que nunca viaje una contraseña en la URL.
+
+### Preparado para providers externos
+
+El sistema queda **preparado para sumar providers externos** como Google o GitHub (`passport-google-oauth20`, `passport-github2`) **sin tocar `app.js`**. En `passport.config.js` las estrategias se registran desde un único objeto:
+
+```js
+const strategies = {
+  register: registerStrategy,
+  login: loginStrategy,
+  current: currentStrategy
+  // github: githubStrategy  ← un provider nuevo se agrega acá
+}
+```
+
+Para un provider nuevo alcanza con crear su estrategia en ese archivo, sumarla al objeto y agregar sus rutas en `sessions.router.js` usando `passportCall('github')`. Al final del flujo, el mismo controller de login genera el JWT y la cookie.
+
+## Seguridad de la sesión
 
 - **JWT:** se firma con `JWT_SECRET` (HS256) y expira según `JWT_EXPIRES_IN`. El payload tiene solo `{ id, email, role }`, nunca la contraseña.
 - **Cookie `currentUser`:**
@@ -268,7 +305,7 @@ Response `200` – borra la cookie `currentUser`:
   - `sameSite: 'lax'`: no se envía en peticiones originadas desde otros sitios (protección básica contra CSRF).
   - `maxAge: 3600000`: dura 1 hora.
   - `secure`: solo se activa con `NODE_ENV=production`, para que la cookie viaje únicamente por HTTPS.
-- **Middleware `auth`:** lee la cookie, verifica la firma y la expiración del token y guarda `{ id, email, role }` en `req.user`. Si algo falla, responde `401`.
+- **Estrategia `current`:** si no hay cookie, si el token es inválido, manipulado o expiró, o si el usuario ya no existe en la base, responde `401 No autenticado`.
 - **Login:** cuando el email no existe, igual se ejecuta una comparación bcrypt. Así el tiempo de respuesta es el mismo que con una contraseña incorrecta y tampoco se puede deducir por tiempo si un email está registrado.
 
 ## Cómo probar
@@ -310,6 +347,8 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | `current` con token manipulado (rol cambiado a `admin`) | `401` – No autenticado |
 | `current` con token expirado | `401` – No autenticado |
 | `current` con token firmado con otra clave o con `alg: none` | `401` – No autenticado |
+| `current` con token válido de un usuario que ya fue borrado | `401` – No autenticado |
+| Login con credenciales en la query string en vez del body | `400` – Email y contraseña son obligatorios |
 
 ## Entregas
 
@@ -318,7 +357,7 @@ curl -b cookies.txt http://localhost:8080/api/sessions/current
 | 1 | Refactor arquitectónico inicial | ✅ |
 | 2 | Registro seguro de usuarios | ✅ |
 | 3 | Autenticación con JWT y cookies | ✅ |
-| 4 | Autenticación centralizada con Passport | ⏳ |
+| 4 | Autenticación centralizada con Passport | ✅ |
 | 5 | Roles y autorización | ⏳ |
 | 6 | Entidad events y lógica de negocio | ⏳ |
 | 7 | Tickets, inscripciones y control de cupos | ⏳ |

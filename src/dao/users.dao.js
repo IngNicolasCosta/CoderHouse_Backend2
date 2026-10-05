@@ -5,6 +5,10 @@ class UsersDao {
     return UserModel.findOne(filter).lean()
   }
 
+  findById (id) {
+    return UserModel.findById(id).lean()
+  }
+
   async create (data) {
     const user = await UserModel.create(data)
     return user.toObject()

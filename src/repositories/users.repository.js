@@ -9,6 +9,10 @@ class UsersRepository {
     return this.dao.findOne({ email })
   }
 
+  getById (id) {
+    return this.dao.findById(id)
+  }
+
   create (data) {
     return this.dao.create(data)
   }

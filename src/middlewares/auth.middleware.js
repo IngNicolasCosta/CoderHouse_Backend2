@@ -1,20 +1,21 @@
-import { authCookie } from '../config/config.js'
-import { AppError } from '../utils/errors.js'
-import { verifyToken } from '../utils/jwt.js'
+import passport from 'passport'
+import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
 
-export const authMiddleware = (req, res, next) => {
-  const token = req.cookies?.[authCookie.name]
+// Ejecuta una estrategia de Passport sin sesiones y, si falla, deriva el error al
+// errorHandler para responder siempre con el formato JSON de la API
+export const passportCall = (strategy, badRequestMessage = ERROR_MESSAGES.missingFields) =>
+  (req, res, next) => {
+    passport.authenticate(strategy, { session: false }, (error, user, info, status) => {
+      if (error) return next(error)
 
-  if (!token) {
-    throw new AppError('No autenticado', 401)
+      if (!user) {
+        if (info instanceof AppError) return next(info)
+        return next(status === 400
+          ? new AppError(badRequestMessage, 400)
+          : new AppError(ERROR_MESSAGES.unauthenticated, 401))
+      }
+
+      req.user = user
+      next()
+    })(req, res, next)
   }
-
-  try {
-    const { id, email, role } = verifyToken(token)
-    req.user = { id, email, role }
-  } catch {
-    throw new AppError('No autenticado', 401)
-  }
-
-  next()
-}

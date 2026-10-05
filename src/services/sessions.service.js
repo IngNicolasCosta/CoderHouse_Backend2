@@ -1,7 +1,6 @@
 import { usersRepository } from '../repositories/users.repository.js'
 import { createHash, isValidPassword } from '../utils/hash.js'
-import { generateToken } from '../utils/jwt.js'
-import { AppError } from '../utils/errors.js'
+import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
 import { normalizeEmail } from '../utils/validators.js'
 
 const DUPLICATE_KEY_ERROR = 11000
@@ -11,9 +10,15 @@ const DUPLICATE_KEY_ERROR = 11000
 const DUMMY_PASSWORD_HASH = '$2b$10$Lcoc7i4TDjZadwqK/Wij5eeQM5AX0xmNNkwprgqN5gLyoKM/uk2IS'
 
 const toPublicUser = (user) => ({
-  id: user._id,
+  id: user._id.toString(),
   first_name: user.first_name,
   last_name: user.last_name,
+  email: user.email,
+  role: user.role
+})
+
+const toSessionUser = (user) => ({
+  id: user._id.toString(),
   email: user.email,
   role: user.role
 })
@@ -28,7 +33,7 @@ class SessionsService {
 
     const existingUser = await this.repository.getByEmail(normalizedEmail)
     if (existingUser) {
-      throw new AppError('El email ya está registrado', 409)
+      throw new AppError(ERROR_MESSAGES.emailTaken, 409)
     }
 
     try {
@@ -43,21 +48,26 @@ class SessionsService {
       return toPublicUser(newUser)
     } catch (error) {
       if (error.code === DUPLICATE_KEY_ERROR) {
-        throw new AppError('El email ya está registrado', 409)
+        throw new AppError(ERROR_MESSAGES.emailTaken, 409)
       }
       throw error
     }
   }
 
-  async login ({ email, password }) {
+  async validateCredentials ({ email, password }) {
     const user = await this.repository.getByEmail(normalizeEmail(email))
     const passwordMatches = await isValidPassword(password, user?.password ?? DUMMY_PASSWORD_HASH)
 
     if (!user || !passwordMatches) {
-      throw new AppError('Credenciales inválidas', 401)
+      throw new AppError(ERROR_MESSAGES.invalidCredentials, 401)
     }
 
-    return generateToken({ id: user._id.toString(), email: user.email, role: user.role })
+    return toSessionUser(user)
+  }
+
+  async getSessionUser (id) {
+    const user = await this.repository.getById(id)
+    return user ? toSessionUser(user) : null
   }
 }
 

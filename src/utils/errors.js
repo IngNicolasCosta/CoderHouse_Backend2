@@ -5,3 +5,12 @@ export class AppError extends Error {
     this.statusCode = statusCode
   }
 }
+
+export const ERROR_MESSAGES = {
+  missingFields: 'Faltan campos obligatorios',
+  invalidEmail: 'El formato del email es inválido',
+  emailTaken: 'El email ya está registrado',
+  missingCredentials: 'Email y contraseña son obligatorios',
+  invalidCredentials: 'Credenciales inválidas',
+  unauthenticated: 'No autenticado'
+}
