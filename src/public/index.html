@@ -186,8 +186,28 @@
 
       <div class="col-lg-4">
         <div class="card shadow-sm h-100">
-          <div class="card-header fw-semibold">Cambiar estado <span class="badge text-bg-secondary ms-1">dueño / admin</span></div>
+          <div class="card-header fw-semibold">Editar torneo <span class="badge text-bg-secondary ms-1">dueño / admin</span></div>
           <div class="card-body">
+            <form class="row g-2 mb-4" data-endpoint="/api/events/{{id}}" data-method="PUT" data-number-fields="capacity" data-skip-empty novalidate>
+              <div class="col-12">
+                <label for="edit_event_id" class="form-label">Id del torneo</label>
+                <input type="text" class="form-control font-monospace" id="edit_event_id" name="id">
+              </div>
+              <div class="col-8">
+                <label for="edit_title" class="form-label">Nuevo título</label>
+                <input type="text" class="form-control" id="edit_title" name="title">
+              </div>
+              <div class="col-4">
+                <label for="edit_capacity" class="form-label">Cupo</label>
+                <input type="number" class="form-control" id="edit_capacity" name="capacity" min="1">
+              </div>
+              <div class="col-12 form-text mt-1">Solo se envían los campos completos.</div>
+              <div class="col-12">
+                <button type="submit" class="btn btn-info">PUT /api/events/:id</button>
+              </div>
+            </form>
+
+            <h2 class="h6 border-top pt-3">Cambiar estado</h2>
             <form class="row g-3" data-endpoint="/api/events/{{id}}/status" data-method="PATCH" novalidate>
               <div class="col-12">
                 <label for="status_event_id" class="form-label">Id del torneo</label>
@@ -352,6 +372,9 @@ ${JSON.stringify(data, null, 2)}`
     // Arma la petición de un formulario: reemplaza {{campo}} en la URL, y en GET manda los campos como query
     const sendForm = (form) => {
       const data = formToJson(form)
+      if (form.dataset.skipEmpty !== undefined) {
+        Object.keys(data).forEach((field) => { if (data[field] === '') delete data[field] })
+      }
       const url = form.dataset.endpoint.replace(/\{\{(\w+)\}\}/g, (match, field) => {
         const value = encodeURIComponent(data[field] ?? '')
         delete data[field]
