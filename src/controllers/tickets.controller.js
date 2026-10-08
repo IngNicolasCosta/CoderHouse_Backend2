@@ -16,6 +16,6 @@ export const getEventTickets = async (req, res) => {
 }
 
 export const cancelTicket = async (req, res) => {
-  const ticket = await ticketsService.cancelTicket(req.ticket)
+  const ticket = await ticketsService.cancelTicket(req.ticket, req.user)
   res.status(200).json({ status: 'success', payload: ticket })
 }

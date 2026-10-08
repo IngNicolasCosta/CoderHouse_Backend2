@@ -94,11 +94,21 @@ class TicketsService {
     throw new Error('No se pudo generar un código de reserva único')
   }
 
-  // El email se envía en segundo plano: si falla, la inscripción ya quedó confirmada igual
-  notifyConfirmation (userId, event, ticket) {
+  // Los emails se envían en segundo plano: si el envío falla, la operación
+  // (inscripción o cancelación) ya quedó hecha igual y el error se registra
+  notifyUser (userId, sendEmail) {
     userRepository.findById(userId)
-      .then((user) => mailService.sendTicketConfirmation({ to: user.email, name: user.first_name, event, ticket }))
-      .catch((error) => console.error('No se pudo enviar el email de confirmación:', error.message))
+      .then((user) => sendEmail({ to: user.email, name: user.first_name }))
+      .catch((error) => console.error('No se pudo enviar el email:', error.message))
+  }
+
+  notifyConfirmation (userId, event, ticket) {
+    this.notifyUser(userId, (recipient) => mailService.sendTicketConfirmation({ ...recipient, event, ticket }))
+  }
+
+  notifyCancellation (userId, event, ticket, cancelledByAdmin) {
+    this.notifyUser(userId, (recipient) =>
+      mailService.sendTicketCancellation({ ...recipient, event, ticket, cancelledByAdmin }))
   }
 
   async findTicketOrFail (id) {
@@ -139,7 +149,7 @@ class TicketsService {
     }
   }
 
-  async cancelTicket (ticket) {
+  async cancelTicket (ticket, requester) {
     if (ticket.status === TICKET_STATUS.CANCELLED) {
       throw conflict('La inscripción ya está cancelada')
     }
@@ -154,6 +164,8 @@ class TicketsService {
       throw conflict('La inscripción ya está cancelada')
     }
 
+    // Se avisa siempre al dueño del ticket, aclarando si lo canceló otra persona (admin)
+    this.notifyCancellation(ticket.user, event, cancelled, ticket.user !== requester.id)
     return new TicketDTO(cancelled)
   }
 }
