@@ -36,7 +36,8 @@ Cómo se relacionan las entidades del curso con la temática:
 - Passport.js (`passport-local` y `passport-jwt`)
 - jsonwebtoken (JWT)
 - cookie-parser (cookie de autenticación)
-- Nodemailer (email de confirmación de inscripción)
+- Nodemailer (emails de confirmación y cancelación de inscripción)
+- node:test + supertest + mongodb-memory-server (tests automatizados)
 - dotenv
 - Bootstrap 5 (página de inicio)
 
@@ -97,6 +98,9 @@ npm start
 
 # asignar un rol a un usuario registrado (por ejemplo, el primer admin)
 npm run set-role -- admin@mail.com admin
+
+# tests automatizados (no necesitan .env ni MongoDB)
+npm test
 ```
 
 Con el servidor levantado, en `http://localhost:8080/` hay una página de inicio con las rutas disponibles y formularios para probar registro, login, `current` y logout.
@@ -166,6 +170,13 @@ CoderHouse_Backend2/
 │   │   └── codes.js            # generador de códigos de reserva
 │   └── public/
 │       └── index.html          # página de inicio (Bootstrap)
+├── tests/                      # tests automatizados (npm test)
+│   ├── helpers.js              # app contra MongoDB en memoria y emails simulados
+│   ├── auth.test.js
+│   ├── authorization.test.js
+│   ├── events.test.js
+│   └── tickets.test.js
+├── docs/evidencia/             # capturas de cada pre-entrega
 ├── .env.example
 ├── .gitignore
 ├── package.json
@@ -533,7 +544,7 @@ Un `user` recibe `403` (`No tenés permisos para realizar esta acción`). Un `or
 
 #### `PATCH /api/tickets/:tid/cancel` 🔒 dueño del ticket o admin
 
-Cambia el `status` a `cancelled` y registra `cancelledAt`. **No borra el documento.** Response `200` con el ticket actualizado.
+Cambia el `status` a `cancelled`, registra `cancelledAt` y **le envía un email de cancelación al dueño del ticket**. **No borra el documento.** Response `200` con el ticket actualizado.
 
 | Código | Caso | Mensaje |
 |--------|------|---------|
@@ -573,9 +584,16 @@ cupos disponibles = capacity − cupos ocupados
 
 Probado con 10 inscripciones simultáneas a un torneo de cupo 3: se confirmaron exactamente 3 y las otras 7 recibieron `409`.
 
-### Email de confirmación (Nodemailer)
+### Emails (Nodemailer)
 
-Al confirmar una inscripción se envía un email al usuario con el torneo, la liga, la fecha, la sede, los cupos y el código de reserva. El envío se hace en segundo plano: si el servidor de correo falla, la inscripción queda confirmada igual y el error se registra en la consola.
+Se envían dos notificaciones, con el torneo, la liga, la fecha, la sede, los cupos y el código de reserva:
+
+| Email | Cuándo | A quién |
+|-------|--------|---------|
+| **Inscripción confirmada** | Al confirmarse una inscripción | Al usuario inscripto |
+| **Inscripción cancelada** | Al cancelar un ticket | Al dueño del ticket. Si lo canceló un admin, el email lo aclara ("fue cancelada por la administración de la liga") |
+
+Los envíos se hacen en segundo plano: si el servidor de correo falla, la inscripción o la cancelación quedan hechas igual y el error se registra en la consola.
 
 Las credenciales se leen **solo de variables de entorno** (nunca están en el código):
 
@@ -887,6 +905,74 @@ curl -b cookies.txt -c cookies.txt -X POST http://localhost:8080/api/sessions/lo
 curl -b cookies.txt http://localhost:8080/api/sessions/current
 ```
 
+> En Windows usá `curl.exe` desde PowerShell (en PowerShell, `curl` es un alias de otro comando).
+
+### Verificar la cookie HttpOnly con curl
+
+**1. Login mostrando los headers de la respuesta** (`-i`) y guardando la cookie en `cookies.txt` (`-c`):
+
+```bash
+curl -i -c cookies.txt -X POST http://localhost:8080/api/sessions/login -H "Content-Type: application/json" -d "{\"email\":\"ana@mail.com\",\"password\":\"Secreta123\"}"
+```
+
+En la respuesta aparece el header `Set-Cookie` con los flags de seguridad:
+
+```
+HTTP/1.1 200 OK
+Set-Cookie: currentUser=eyJhbGciOi...; Max-Age=3600; Path=/; Expires=...; HttpOnly; SameSite=Lax
+
+{"status":"success","message":"Login correcto"}
+```
+
+**2. Mirar la cookie guardada.** En el archivo de cookies de curl, la línea empieza con `#HttpOnly_`, que es como curl marca las cookies HttpOnly:
+
+```bash
+cat cookies.txt
+```
+
+```
+#HttpOnly_localhost   FALSE   /   FALSE   1791508618   currentUser   eyJhbGciOi...
+```
+
+**3. Reutilizar la cookie** (`-b`) para llamar a `/current`, como haría el navegador:
+
+```bash
+curl -b cookies.txt http://localhost:8080/api/sessions/current
+```
+
+```json
+{"status":"success","payload":{"id":"6ac8...","email":"ana@mail.com","role":"user"}}
+```
+
+**4. Logout actualizando el archivo** (`-b` y `-c` juntos). El servidor borra la cookie y curl la saca de `cookies.txt`, así que el siguiente `/current` da `401`:
+
+```bash
+curl -b cookies.txt -c cookies.txt -X POST http://localhost:8080/api/sessions/logout
+curl -b cookies.txt http://localhost:8080/api/sessions/current
+```
+
+```json
+{"status":"error","message":"No autenticado"}
+```
+
+## Tests automatizados
+
+```bash
+npm test
+```
+
+Son **30 tests de integración** hechos con `node:test` (el runner que trae Node) y `supertest`, que hacen requests HTTP reales contra la app:
+
+- Cada archivo levanta su propio **MongoDB en memoria** (`mongodb-memory-server`). No hace falta `.env` ni conexión a Atlas, y no se toca ninguna base real.
+- Los **emails se reemplazan por mocks**: no se envía ningún mail, pero los tests verifican que se dispararon el de confirmación y el de cancelación.
+
+| Archivo | Qué cubre |
+|---------|-----------|
+| [`auth.test.js`](tests/auth.test.js) | Registro sin `password` y con email normalizado, duplicado `409`, validaciones `400`, cookie `currentUser` HttpOnly, `/current` con `{ id, email, role }`, credenciales inválidas con mensaje genérico, logout → `401`, token manipulado → `401` |
+| [`authorization.test.js`](tests/authorization.test.js) | `401` sin sesión en todas las rutas privadas; `403` con rol insuficiente (crear evento como user, ver usuarios como organizer, cambiar roles como organizer); modificar evento ajeno (`403` organizer / `200` admin); cancelar ticket ajeno (`403` user / `200` admin); un cambio de rol aplica en la misma sesión |
+| [`events.test.js`](tests/events.test.js) | Fecha pasada, `capacity` y `price` inválidos `400`; `organizer` del body ignorado y respuesta con la forma del DTO; evento cancelado `409`; transiciones inválidas `409`; borradores no públicos; filtros, paginación y orden; parámetros inválidos `400`; `404` sin errores `500` |
+| [`tickets.test.js`](tests/tickets.test.js) | Inscripción `201` + email; duplicada `409`; sin cupo `409`; evento cancelado `409` e inexistente `404`; cancelación con `cancelledAt`, email y cupo liberado; cancelar dos veces `409`; inscriptos solo para dueño o admin y sin `password`; `my-tickets` con el DTO del evento; 8 inscripciones simultáneas con cupo 3 → exactamente 3 confirmadas |
+
 ## Casos probados
 
 | Caso | Resultado |
@@ -1077,15 +1163,43 @@ El organizador dueño ve los inscriptos y el resumen de cupos (los cancelados no
 
 ## Entregas
 
-| # | Entrega | Estado |
-|---|---------|--------|
-| 1 | Refactor arquitectónico inicial | ✅ |
-| 2 | Registro seguro de usuarios | ✅ |
-| 3 | Autenticación con JWT y cookies | ✅ |
-| 4 | Autenticación centralizada con Passport | ✅ |
-| 5 | Roles y autorización | ✅ |
-| 6 | Entidad events y lógica de negocio | ✅ |
-| 7 | Tickets, inscripciones y control de cupos | ✅ |
-| 8 | Arquitectura con DAO, Repository y DTO | ✅ |
+Cada pre-entrega está marcada con un **tag de git** que apunta al commit exacto con el que se entregó. Así se puede revisar el código tal como quedó en cada etapa:
 
-Cada entrega está marcada con un tag de git (`pre-entrega-1`, `pre-entrega-2`, …) para poder ver el código tal como quedó en cada etapa.
+| # | Entrega | Tag | Ver en GitHub |
+|---|---------|-----|---------------|
+| 1 | Refactor arquitectónico inicial | `pre-entrega-1` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-1) |
+| 2 | Registro seguro de usuarios | `pre-entrega-2` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-2) |
+| 3 | Autenticación con JWT y cookies | `pre-entrega-3` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-3) |
+| 4 | Autenticación centralizada con Passport | `pre-entrega-4` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-4) |
+| 5 | Roles y autorización | `pre-entrega-5` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-5) |
+| 6 | Entidad events y lógica de negocio | `pre-entrega-6` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-6) |
+| 7 | Tickets, inscripciones y control de cupos | `pre-entrega-7` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-7) |
+| 8 | Arquitectura con DAO, Repository y DTO | `pre-entrega-8` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-8) |
+
+Para ver una entrega en tu copia local:
+
+```bash
+git fetch --tags
+git checkout pre-entrega-3   # el proyecto queda como en la pre-entrega 3
+git checkout main            # volver a la versión actual
+```
+
+Para ver solo los cambios de una entrega respecto de la anterior:
+
+```bash
+git diff pre-entrega-2 pre-entrega-3 --stat
+```
+
+La rama `main` tiene siempre la versión más reciente, con las mejoras de las devoluciones aplicadas encima de la última pre-entrega.
+
+## Devoluciones aplicadas
+
+Mejoras hechas a partir de las correcciones de las pre-entregas:
+
+| Pre-entrega | Devolución | Cambio aplicado |
+|-------------|------------|-----------------|
+| 1 | La conexión a MongoDB delegaba el manejo de errores al `try/catch` de `server.js` | `connectDB` maneja sus propios errores y los traduce a mensajes que dicen qué revisar: `MONGO_URL` con formato inválido, usuario o contraseña incorrectos, host inexistente, conexión rechazada o timeout (con la pista de Network Access en Atlas). Además avisa si la conexión se pierde o se recupera con el servidor andando ([`database.js`](src/config/database.js)) |
+| 3 | Documentar qué tag corresponde a cada pre-entrega | Tabla de tags con links y comandos `git checkout` / `git diff` ([Entregas](#entregas)) |
+| 3 | Mostrar cómo verificar la cookie HttpOnly con curl | Sección [Verificar la cookie HttpOnly con curl](#verificar-la-cookie-httponly-con-curl): header `Set-Cookie`, marca `#HttpOnly_` en el archivo de cookies y reutilización entre login, `/current` y logout |
+| 5 | Faltaban tests automatizados | 30 tests de integración con `npm test` ([Tests automatizados](#tests-automatizados)), incluidos todos los casos de 401/403 sugeridos |
+| 7 | Faltaba el email al cancelar una inscripción | `mailService.sendTicketCancellation`, que se dispara al cancelar un ticket y aclara si lo canceló un admin ([Emails](#emails-nodemailer)) |
