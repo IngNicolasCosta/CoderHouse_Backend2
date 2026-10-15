@@ -1,6 +1,14 @@
 # 🏐 Liga de Vóley API
 
-API REST para una **plataforma de torneos de vóley**, desarrollada como proyecto integrador de **Programación Backend II (CoderHouse)**.
+API REST para una **plataforma de torneos de vóley** (ligas, torneos, inscripciones y cupos), desarrollada como proyecto integrador de **Programación Backend II (CoderHouse)**.
+
+Node.js · Express · MongoDB/Mongoose · Passport + JWT en cookie HttpOnly · Nodemailer · arquitectura en capas con **DAO, Repository, Services y DTOs**.
+
+| Documento | Contenido |
+|-----------|-----------|
+| **Este README** | Temática, arquitectura, instalación, uso, entregas y devoluciones |
+| [`docs/API.md`](docs/API.md) | Referencia completa de endpoints con ejemplos, reglas de negocio, roles, Passport y cómo probar |
+| [`docs/EVIDENCIA.md`](docs/EVIDENCIA.md) | Capturas de la API funcionando, por pre-entrega |
 
 ## Temática
 
@@ -14,7 +22,7 @@ La plataforma gestiona torneos de vóley organizados en **ligas por división y 
 | D        | ✅       | ✅        |
 | E        | ✅       | ✅        |
 
-A lo largo de las entregas se van a incorporar equipos, jugadores, partidos e inscripciones a torneos.
+La API cubre usuarios con roles, torneos por liga e inscripciones con control de cupos y notificaciones por email.
 
 Cómo se relacionan las entidades del curso con la temática:
 
@@ -26,6 +34,173 @@ Cómo se relacionan las entidades del curso con la temática:
 | `Ticket`          | Inscripción a un torneo |
 
 **Roles:** `admin` (gestiona todo el sistema), `organizer` (crea y administra torneos) y `user` (jugador que consulta torneos y se inscribe).
+
+## Arquitectura
+
+La API está organizada en capas con una sola responsabilidad cada una. Un request baja por las capas y la respuesta vuelve transformada por un DTO:
+
+```
+Cliente
+  │  HTTP
+  ▼
+Routes ─────────── URL → middlewares → controller
+  ▼
+Middlewares ────── autenticación (401) · autorización por rol y propiedad (403) · errores
+  ▼
+Controllers ────── solo HTTP: arman el DTO de entrada, llaman al service y responden
+  │                   ▲
+  │  DTO de entrada   │  DTO de salida
+  ▼                   │
+Services ───────── reglas de negocio: cupos, estados, duplicados, permisos, emails
+  ▼
+Repositories ───── métodos del dominio: findByEmail, countOccupiedSeats, cancelTicket…
+  ▼
+DAO ────────────── único acceso a Mongoose: findById, findOne, find, count, create, update
+  ▼
+Models ─────────── schemas de Mongoose: User, Event, Ticket (relacionados por referencias)
+```
+
+Las reglas de capas se verifican automáticamente con [`tests/architecture.test.js`](tests/architecture.test.js), que lee los imports de cada archivo de `src/`:
+
+| Regla | Verificado |
+|-------|:----------:|
+| Solo los **DAO** importan los modelos de Mongoose | ✅ |
+| `mongoose` solo aparece en DAO, modelos y la conexión a la base | ✅ |
+| Los **repositories** usan su DAO y no importan modelos | ✅ |
+| Los **services** consumen repositories, nunca DAO ni modelos | ✅ |
+| Los **controllers** no importan modelos, DAO ni repositories | ✅ |
+| Las **rutas** solo conectan URLs con middlewares y controllers | ✅ |
+
+### 1. Persistencia: DAO y Repository
+
+**DAO** ([`src/dao/`](src/dao)): es la **única capa que habla con MongoDB**. `BaseDAO` implementa las operaciones comunes con Mongoose, y cada entidad tiene su DAO:
+
+| DAO | Modelo | Métodos |
+|-----|--------|---------|
+| `UserDAO` | `User` | `findById`, `findOne`, `find`, `count`, `create`, `update`, `updateOne` (heredados de `BaseDAO`) |
+| `EventDAO` | `Event` | Ídem |
+| `TicketDAO` | `Ticket` | Ídem + `sumQuantity` (aggregate que suma los cupos de los tickets) |
+
+Un id con formato inválido se trata como "no encontrado" en el DAO, así la API responde `404` y nunca `500`.
+
+**Repository** ([`src/repositories/`](src/repositories)): son **intermediarios entre services y DAO**. Reciben su DAO por constructor y exponen métodos con nombres del dominio. Arman los filtros, populates y consultas para que los services no conozcan detalles de MongoDB:
+
+| Repository | Métodos del dominio |
+|------------|---------------------|
+| `UserRepository` | `findByEmail`, `findById`, `findAll`, `createUser`, `updateRole` |
+| `EventRepository` | `findById`, `findPaginated(criterios, paginación)` (traduce filtros, búsqueda de texto y orden a una consulta de MongoDB), `createEvent`, `updateEvent` |
+| `TicketRepository` | `findActiveByUserAndEvent`, `countOccupiedSeats`, `findByUser` (populate del evento), `findByEvent` (populate del usuario, sin password), `createTicket`, `confirmTicket`, `cancelTicket` |
+
+Ejemplo de la cadena para calcular cupos ocupados:
+
+```js
+// dao/tickets.dao.js — acceso a datos (Mongoose)
+async sumQuantity ({ event, statuses, maxId }) {
+  const [result] = await TicketModel.aggregate([{ $match: match }, { $group: { _id: null, total: { $sum: '$quantity' } } }])
+  return result?.total ?? 0
+}
+
+// repositories/tickets.repository.js — método del dominio
+countOccupiedSeats (eventId) {
+  return this.dao.sumQuantity({ event: eventId, statuses: ACTIVE_TICKET_STATUSES })
+}
+
+// services/tickets.service.js — regla de negocio
+if (quantity > event.availableSeats) throw noSeatsError(event.availableSeats, quantity)
+```
+
+El desacoplamiento se prueba en [`tests/unit.test.js`](tests/unit.test.js): `EventRepository` funciona con un DAO falso, y `SessionsService` y `EventsService` con repositories falsos en memoria, **sin base de datos**.
+
+### 2. DTOs: datos que entran y salen de la API
+
+**DTOs de entrada** ([`src/dto/request/`](src/dto/request)): los arma el controller (o la estrategia de Passport) con el request. Cada uno **filtra** (toma solo los campos permitidos), **valida** el formato (`400` si algo está mal) y **adapta** los datos antes de que lleguen al service:
+
+| DTO de entrada | Endpoint | Filtra | Valida | Adapta |
+|----------------|----------|--------|--------|--------|
+| `RegisterUserDTO` | `POST /api/sessions/register` | Solo nombre, apellido, email y password (un `role` en el body se descarta) | Campos obligatorios, formato de email, largo de contraseña | Recorta espacios y normaliza el email |
+| `LoginDTO` | `POST /api/sessions/login` | Email y password | Que vengan los dos como texto | Normaliza el email |
+| `CreateEventDTO` | `POST /api/events` | Campos editables (`organizer` se ignora) | Obligatorios, liga válida, fecha legible, números | Convierte números y fechas, `status` por defecto `draft` |
+| `UpdateEventDTO` | `PUT /api/events/:id` | Solo los campos enviados | Ídem, y que no venga `status` | Ídem |
+| `ChangeEventStatusDTO` | `PATCH /api/events/:id/status` | `status` | Que sea un estado existente | — |
+| `EventQueryDTO` | `GET /api/events` | Solo los query params conocidos | Tipos, liga, fechas, página, orden permitido | Criterios de búsqueda, `limit` máximo 50, orden y fechas listos para el repository |
+| `CreateTicketDTO` | `POST /api/events/:eid/tickets` | `quantity` | Entero mayor a 0 | `1` por defecto |
+| `ChangeRoleDTO` | `PATCH /api/users/:uid/role` | `role` | Que sea un rol existente | — |
+
+**DTOs de salida** ([`src/dto/response/`](src/dto/response)): los services devuelven siempre un DTO. **Ninguna respuesta incluye `password`, ni siquiera hasheada, ni campos internos** (`__v`, `updatedAt`). Cuando hay `populate`, el documento relacionado también pasa por un DTO:
+
+| DTO de salida | Campos |
+|---------------|--------|
+| `CurrentUserDTO` | `id`, `email`, `role` (es `req.user` y la respuesta de `/current`) |
+| `UserDTO` | `id`, `first_name`, `last_name`, `email`, `role` |
+| `UserSummaryDTO` | `id`, `first_name`, `last_name`, `email` (usuario con populate en los inscriptos) |
+| `EventDTO` | `id`, `title`, `description`, `category`, `date`, `location`, `capacity`, `price`, `status`, `organizer` (+ `availableSeats` en el detalle) |
+| `EventSummaryDTO` | `id`, `title`, `date`, `location`, `category`, `status` (evento con populate en mis tickets) |
+| `TicketDTO` | `id`, `event`, `user`, `quantity`, `status`, `reservationCode`, `createdAt`, `cancelledAt` |
+
+### 3. Services y Controllers
+
+**Controllers** ([`src/controllers/`](src/controllers)): **solo manejan HTTP**. Leen `body`, `params` y `query`, arman el DTO de entrada, llaman al service y devuelven el status code con la respuesta. No calculan cupos, no validan estados ni conocen la base de datos:
+
+```js
+// controllers/tickets.controller.js
+export const createTicket = async (req, res) => {
+  const ticket = await ticketsService.createTicket(req.params.eid, req.user, new CreateTicketDTO(req.body))
+  res.status(201).json({ status: 'success', payload: ticket })
+}
+```
+
+**Services** ([`src/services/`](src/services)): **concentran toda la lógica de negocio**. Reciben DTOs ya validados, usan repositories (inyectados por constructor) y devuelven DTOs de salida:
+
+| Service | Reglas de negocio |
+|---------|-------------------|
+| `SessionsService` | Email único (`409`), hash bcrypt, rol `user` forzado en el registro, credenciales con mensaje genérico y comparación contra un hash falso para no revelar emails registrados |
+| `UsersService` | Listado de usuarios y cambio de rol (el admin no puede cambiarse su propio rol) |
+| `EventsService` | Fecha futura, capacidad mayor a 0 y no menor a los cupos ocupados, precio no negativo, transiciones de estado, eventos cancelados o finalizados no editables, borradores no públicos, **permisos sobre eventos propios** (`getManageableEvent`) |
+| `TicketsService` | Evento publicado y futuro, cupo suficiente (solo cuentan los tickets activos), una inscripción activa por usuario, control de inscripciones simultáneas, cancelación sin borrado, **permisos sobre tickets propios** (`getCancellableTicket`) y **emails** de confirmación y cancelación |
+| `MailService` | Arma y envía los emails con Nodemailer |
+
+Los middlewares de autorización por propiedad (`authorizeEventOwnerOrAdmin`, `authorizeTicketOwnerOrAdmin`) solo delegan en esos métodos de los services. La regla vive en una sola capa.
+
+### Manejo de errores
+
+Los services y los DTOs lanzan `AppError(mensaje, código)`, y el middleware centralizado [`errorHandler`](src/middlewares/errorHandler.middleware.js) responde siempre `{ "status": "error", "message": "..." }`:
+
+| Código | Cuándo |
+|--------|--------|
+| `400` | Datos o parámetros inválidos (DTO de entrada o regla de negocio) |
+| `401` | Sin sesión o token inválido |
+| `403` | Con sesión pero sin permiso (rol o propiedad del recurso) |
+| `404` | Recurso inexistente o id inválido |
+| `409` | Conflicto con el estado actual (email registrado, inscripción duplicada, sin cupo, evento cancelado) |
+| `500` | Error inesperado (en producción no se muestra el detalle) |
+
+## Estructura de carpetas
+
+```
+CoderHouse_Backend2/
+├── src/
+│   ├── app.js                  # configura Express, Passport y rutas (no levanta el server)
+│   ├── server.js               # valida el entorno, conecta la base y levanta el server
+│   ├── config/                 # entorno, conexión a MongoDB, Passport, Nodemailer, roles y permisos, constantes
+│   ├── routes/                 # sessions, events, tickets, users, health
+│   ├── middlewares/            # authenticate, authorizeRoles, propiedad de recursos, errores, 404
+│   ├── controllers/            # solo HTTP
+│   ├── services/               # reglas de negocio: sessions, users, events, tickets, mail
+│   ├── repositories/           # UserRepository, EventRepository, TicketRepository
+│   ├── dao/                    # BaseDAO, UserDAO, EventDAO, TicketDAO
+│   ├── dto/
+│   │   ├── request/            # DTOs de entrada: filtran, validan y adaptan
+│   │   └── response/           # DTOs de salida: sin datos sensibles
+│   ├── models/                 # User, Event, Ticket (Mongoose)
+│   ├── utils/                  # hash (bcrypt), jwt, validadores, errores, códigos de reserva
+│   ├── scripts/setRole.js      # npm run set-role
+│   └── public/index.html       # página de inicio para probar la API (Bootstrap)
+├── tests/                      # npm test: arquitectura, unitarios e integración
+├── docs/                       # API.md, EVIDENCIA.md y capturas
+├── .env.example
+├── .gitignore
+└── package.json
+```
 
 ## Tecnologías
 
@@ -79,14 +254,6 @@ Para generar un `JWT_SECRET` aleatorio:
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
-## Seguridad del repositorio
-
-- El archivo **`.env` no se sube** al repositorio: está en el `.gitignore` y contiene las credenciales reales (MongoDB, `JWT_SECRET`, email).
-- En el repo solo está **`.env.example`**, con las variables necesarias y valores de ejemplo.
-- **`node_modules` tampoco se sube**: se instala con `npm install`.
-- **Ninguna credencial está escrita en el código**: todo se lee de variables de entorno (`src/config/config.js`).
-- Las contraseñas de los usuarios se guardan **hasheadas con bcrypt** y **ninguna respuesta de la API incluye `password`**.
-
 ## Ejecución
 
 ```bash
@@ -105,174 +272,43 @@ npm test
 
 Con el servidor levantado, en `http://localhost:8080/` hay una página de inicio con las rutas disponibles y formularios para probar registro, login, `current` y logout.
 
-## Estructura de carpetas
+### Usuarios de prueba
 
-```
-CoderHouse_Backend2/
-├── src/
-│   ├── app.js                  # configura Express, middlewares, Passport y rutas (NO levanta el server)
-│   ├── server.js               # valida el entorno, conecta la base y levanta el servidor
-│   ├── config/
-│   │   ├── config.js           # variables de entorno (dotenv) y opciones de la cookie
-│   │   ├── constants.js        # estados de eventos y tickets, ligas, transiciones y paginación
-│   │   ├── database.js         # conexión a MongoDB
-│   │   ├── mailer.config.js    # transporter de Nodemailer (credenciales desde el .env)
-│   │   ├── passport.config.js  # estrategias de Passport: register, login y current
-│   │   └── permissions.js      # roles y matriz de permisos
-│   ├── routes/
-│   │   ├── health.router.js
-│   │   ├── events.router.js    # rutas de eventos protegidas con authenticate + authorizeRoles
-│   │   ├── sessions.router.js
-│   │   ├── users.router.js     # rutas administrativas (solo admin)
-│   │   └── tickets.router.js   # my-tickets y cancelación de inscripciones
-│   ├── controllers/
-│   │   ├── health.controller.js
-│   │   ├── events.controller.js
-│   │   ├── sessions.controller.js
-│   │   ├── users.controller.js
-│   │   └── tickets.controller.js
-│   ├── services/
-│   │   ├── events.service.js       # reglas de negocio de torneos, filtros y paginación
-│   │   ├── sessions.service.js     # reglas de negocio: alta de usuario, credenciales, usuario de la sesión
-│   │   ├── users.service.js        # listado de usuarios y cambio de rol
-│   │   ├── tickets.service.js      # inscripciones: validaciones, cupos y cancelación
-│   │   └── mail.service.js         # email de confirmación de inscripción
-│   ├── repositories/
-│   │   ├── events.repository.js    # EventRepository
-│   │   ├── users.repository.js     # UserRepository
-│   │   └── tickets.repository.js   # TicketRepository
-│   ├── dao/
-│   │   ├── base.dao.js             # BaseDAO: operaciones comunes con Mongoose
-│   │   ├── events.dao.js           # EventDAO
-│   │   ├── users.dao.js            # UserDAO
-│   │   └── tickets.dao.js          # TicketDAO
-│   ├── dto/
-│   │   ├── user.dto.js             # UserDTO, CurrentUserDTO, UserSummaryDTO
-│   │   ├── event.dto.js            # EventDTO, EventSummaryDTO
-│   │   ├── ticket.dto.js           # TicketDTO
-│   │   └── helpers.js
-│   ├── models/
-│   │   ├── User.js
-│   │   ├── Event.js
-│   │   └── Ticket.js
-│   ├── middlewares/
-│   │   ├── auth.middleware.js      # authenticate (401), optionalAuthenticate y passportCall
-│   │   ├── authorize.middleware.js # authorizeRoles (403), authorizeEventOwnerOrAdmin y authorizeTicketOwnerOrAdmin
-│   │   ├── notFound.middleware.js
-│   │   └── errorHandler.middleware.js
-│   ├── scripts/
-│   │   └── setRole.js          # npm run set-role: asigna un rol (para crear el primer admin)
-│   ├── utils/
-│   │   ├── hash.js             # createHash / isValidPassword (bcrypt)
-│   │   ├── jwt.js              # generateToken (lo usa el controller de login)
-│   │   ├── validators.js       # validación de datos de registro/login y normalización de email
-│   │   ├── errors.js           # AppError con código HTTP y mensajes de error
-│   │   └── codes.js            # generador de códigos de reserva
-│   └── public/
-│       └── index.html          # página de inicio (Bootstrap)
-├── tests/                      # tests automatizados (npm test)
-│   ├── helpers.js              # app contra MongoDB en memoria y emails simulados
-│   ├── auth.test.js
-│   ├── authorization.test.js
-│   ├── events.test.js
-│   └── tickets.test.js
-├── docs/evidencia/             # capturas de cada pre-entrega
-├── .env.example
-├── .gitignore
-├── package.json
-└── README.md
+El registro público siempre crea usuarios con rol `user`. Para probar los tres roles:
+
+1. Registrar tres usuarios desde `http://localhost:8080/` o con `POST /api/sessions/register`, por ejemplo `admin@mail.com`, `organizador@mail.com` y `jugadora@mail.com`.
+2. Asignar los roles desde la terminal:
+
+```bash
+npm run set-role -- admin@mail.com admin
+npm run set-role -- organizador@mail.com organizer
 ```
 
-## Arquitectura en capas
+Después, el admin también puede cambiar roles desde la API con `PATCH /api/users/:uid/role`.
 
-La API está organizada en capas con una responsabilidad cada una. Una petición recorre las capas de arriba hacia abajo, y la respuesta vuelve transformada por un DTO:
+## Tests automatizados
 
-```
-Cliente
-  ↓
-Router ─────────── define la URL y encadena middlewares
-  ↓
-Middlewares ────── autenticación (401) y autorización por rol/propiedad (403)
-  ↓
-Controller ─────── lee body/params/query, llama al service y responde
-  ↓
-Service ────────── reglas de negocio · devuelve DTOs
-  ↓
-Repository ─────── métodos del dominio (findByEmail, countOccupiedSeats, cancelTicket…)
-  ↓
-DAO ────────────── acceso a MongoDB con Mongoose
-  ↓
-Model ──────────── schema de Mongoose
+```bash
+npm test
 ```
 
-| Capa | Carpeta | Responsabilidad | Ejemplo |
-|------|---------|-----------------|---------|
-| **Routes** | `routes/` | Asocian cada URL con sus middlewares y su controller. No tienen lógica | `router.post('/:eid/tickets', authenticate, authorizeRoles(...), createTicket)` |
-| **Middlewares** | `middlewares/` | Autenticación con Passport (`401`), autorización por rol (`403`), propiedad del recurso y manejo centralizado de errores | `authorizeRoles`, `authorizeEventOwnerOrAdmin`, `errorHandler` |
-| **Controllers** | `controllers/` | Solo coordinan: extraen datos del request, llaman al service y devuelven la respuesta. No calculan cupos, no validan estados ni importan modelos | `createTicket` llama a `ticketsService.createTicket(...)` y responde `201` |
-| **Services** | `services/` | Toda la lógica de negocio: validaciones, estados, cupos, duplicados, permisos sobre recursos propios y envío de email. Usan repositories, nunca DAOs ni modelos | `ticketsService` valida el torneo, el cupo y los duplicados y confirma la inscripción |
-| **Repositories** | `repositories/` | Intermediarios entre services y DAOs. Ofrecen métodos con nombres del dominio y arman los filtros y populates | `TicketRepository.countOccupiedSeats(eventId)`, `UserRepository.findByEmail(email)` |
-| **DAO** | `dao/` | Único lugar que usa Mongoose y los modelos: `findById`, `findOne`, `find`, `count`, `create`, `update` | `TicketDAO.sumQuantity(...)` hace el `aggregate` de cupos |
-| **DTO** | `dto/` | Definen exactamente qué datos salen en cada respuesta. Nunca incluyen `password`, y filtran también los documentos traídos con `populate` | `CurrentUserDTO` → `{ id, email, role }` |
-| **Models** | `models/` | Schemas de Mongoose: `User`, `Event`, `Ticket` (relacionados por referencias) | `Ticket.user` y `Ticket.event` son `ObjectId` |
+Son **47 tests** hechos con `node:test` (el runner que trae Node). Los de integración usan `supertest` y hacen requests HTTP reales contra la app:
 
-### Reglas que se cumplen en todo el proyecto
+- Cada archivo levanta su propio **MongoDB en memoria** (`mongodb-memory-server`). No hace falta `.env` ni conexión a Atlas, y no se toca ninguna base real.
+- Los **emails se reemplazan por mocks**: no se envía ningún mail, pero los tests verifican que se dispararon el de confirmación y el de cancelación.
 
-- **Los modelos de Mongoose solo se importan en los DAO.** Ningún service, controller o middleware usa `UserModel`, `EventModel` o `TicketModel`, ni importa `mongoose`.
-- **Los services solo usan repositories** (y otros services). Por ejemplo, `ticketsService` usa `TicketRepository` y `UserRepository`, y le pide a `eventsService` el torneo.
-- **Los controllers solo coordinan request/response.** La única excepción intencional es el login: la estrategia de Passport valida las credenciales y el controller firma el JWT y setea la cookie, como pedía la pre-entrega 4.
-- **Toda respuesta con datos pasa por un DTO.** El `password` nunca sale de la capa de datos hacia el cliente, ni siquiera hasheado.
-- **Un id con formato inválido no rompe nada:** el DAO lo trata como "no encontrado", así la API responde `404` y no `500`.
+| Archivo | Qué cubre |
+|---------|-----------|
+| [`architecture.test.js`](tests/architecture.test.js) | Reglas de capas leyendo los imports de `src/`: solo los DAO usan modelos y mongoose, los repositories usan su DAO, los services no usan DAO ni modelos, los controllers no usan modelos, DAO ni repositories |
+| [`unit.test.js`](tests/unit.test.js) | Sin base de datos: DTOs de entrada (filtrado, validación y adaptación), DTOs de salida sin datos sensibles (también con populate) y services/repositories con dependencias falsas en memoria |
+| [`auth.test.js`](tests/auth.test.js) | Registro sin `password` y con email normalizado, duplicado `409`, validaciones `400`, cookie `currentUser` HttpOnly, `/current` con `{ id, email, role }`, credenciales inválidas con mensaje genérico, logout → `401`, token manipulado → `401` |
+| [`authorization.test.js`](tests/authorization.test.js) | `401` sin sesión en todas las rutas privadas; `403` con rol insuficiente (crear evento como user, ver usuarios como organizer, cambiar roles como organizer); modificar evento ajeno (`403` organizer / `200` admin); cancelar ticket ajeno (`403` user / `200` admin); un cambio de rol aplica en la misma sesión |
+| [`events.test.js`](tests/events.test.js) | Fecha pasada, `capacity` y `price` inválidos `400`; `organizer` del body ignorado y respuesta con la forma del DTO; evento cancelado `409`; transiciones inválidas `409`; borradores no públicos; filtros, paginación y orden; parámetros inválidos `400`; `404` sin errores `500` |
+| [`tickets.test.js`](tests/tickets.test.js) | Inscripción `201` + email; duplicada `409`; sin cupo `409`; evento cancelado `409` e inexistente `404`; cancelación con `cancelledAt`, email y cupo liberado; cancelar dos veces `409`; inscriptos solo para dueño o admin y sin `password`; `my-tickets` con el DTO del evento; 8 inscripciones simultáneas con cupo 3 → exactamente 3 confirmadas |
 
-### DTOs
+## Endpoints
 
-| DTO | Se usa en | Campos |
-|-----|-----------|--------|
-| `UserDTO` | Registro, `GET /api/users`, cambio de rol | `id`, `first_name`, `last_name`, `email`, `role` |
-| `CurrentUserDTO` | `req.user` y `GET /api/sessions/current` | `id`, `email`, `role` |
-| `UserSummaryDTO` | Usuario con populate en `GET /api/events/:eid/tickets` | `id`, `first_name`, `last_name`, `email` |
-| `EventDTO` | Todas las respuestas de torneos (el detalle suma `availableSeats`) | `id`, `title`, `description`, `category`, `date`, `location`, `capacity`, `price`, `status`, `organizer` |
-| `EventSummaryDTO` | Torneo con populate en `GET /api/tickets/my-tickets` | `id`, `title`, `date`, `location`, `category`, `status` |
-| `TicketDTO` | Todas las respuestas de inscripciones | `id`, `event`, `user`, `quantity`, `status`, `reservationCode`, `createdAt`, `cancelledAt` (si `event` o `user` vienen con populate, pasan por su DTO resumido) |
-
-### Manejo de errores
-
-Los services lanzan `AppError(mensaje, código)` y el middleware centralizado [`errorHandler`](src/middlewares/errorHandler.middleware.js) responde siempre con el mismo formato:
-
-```json
-{ "status": "error", "message": "..." }
-```
-
-| Código | Cuándo |
-|--------|--------|
-| `400` | Datos o parámetros inválidos (campos faltantes, fecha pasada, `quantity` inválida, JSON mal formado) |
-| `401` | Sin sesión o token inválido |
-| `403` | Con sesión, pero sin permiso (rol o propiedad del recurso) |
-| `404` | Recurso inexistente o id inválido |
-| `409` | Conflicto con el estado actual (email registrado, inscripción duplicada, sin cupo, torneo cancelado) |
-| `500` | Error interno inesperado. En producción no se muestra el detalle |
-
-### Flujo de una petición: ejemplo de inscripción
-
-```
-POST /api/events/:eid/tickets
-  → authenticate                  Passport 'current': JWT de la cookie → req.user (CurrentUserDTO)
-  → authorizeRoles(...)           el rol puede inscribirse
-  → tickets.controller            createTicket(req.params.eid, req.user, req.body)
-  → tickets.service               valida quantity, torneo, duplicado y cupo; crea pending → confirmed; email
-  → TicketRepository              findActiveByUserAndEvent, countOccupiedSeats, createTicket, confirmTicket
-  → TicketDAO                     findOne, aggregate, create, findOneAndUpdate
-  → TicketDTO                     respuesta 201 sin datos internos
-```
-
-En las rutas de sesión, el middleware es una estrategia de Passport:
-
-```
-Cliente → Router → passportCall('register' | 'login' | 'current') → Strategy → Service → Repository → DAO → Model
-                                                                 ↘ req.user → Controller → Respuesta
-```
-
-## Rutas disponibles
+Resumen de las rutas. El detalle de cada una, con ejemplos de request/response y errores, está en [`docs/API.md`](docs/API.md).
 
 | Método | Ruta                          | Descripción                                   | Acceso |
 |--------|-------------------------------|-----------------------------------------------|--------|
@@ -294,872 +330,32 @@ Cliente → Router → passportCall('register' | 'login' | 'current') → Strate
 | GET    | `/api/tickets/my-tickets`     | Mis inscripciones                             | 🔒 cualquier usuario con sesión |
 | PATCH  | `/api/tickets/:tid/cancel`    | Cancelar una inscripción                      | 🔒 dueño del ticket o `admin` |
 
-Todas las respuestas tienen el formato `{ "status": "success" | "error", ... }`. Una ruta inexistente devuelve `404`.
+Las rutas 🔒 responden **`401`** sin sesión y **`403`** con sesión pero sin permiso.
 
-Las rutas 🔒 responden **`401`** si no hay sesión y **`403`** si hay sesión pero el rol no tiene permiso (ver [Roles y autorización](#roles-y-autorización)).
+**Flujo de autenticación:** registro → login (Passport `login` valida, el controller firma el JWT y lo guarda en la cookie `currentUser` HttpOnly) → rutas privadas (Passport `current` lee la cookie y deja el usuario en `req.user`) → logout (borra la cookie).
 
-### `GET /api/health`
+**Flujo de inscripción:** organizer crea un torneo publicado → user `POST /api/events/:eid/tickets` → se valida torneo, cupo y duplicados → ticket `confirmed` + email → `GET /api/tickets/my-tickets` → `PATCH /api/tickets/:tid/cancel` libera el cupo y envía un email de cancelación.
 
-Response `200`:
+## Roles y permisos
 
-```json
-{ "status": "ok", "message": "Servidor activo" }
-```
+| Acción | `user` | `organizer` | `admin` |
+|--------|:------:|:-----------:|:-------:|
+| Consultar torneos publicados | ✅ | ✅ | ✅ |
+| Inscribirse, ver y cancelar sus inscripciones | ✅ | ✅ | ✅ |
+| Crear torneos | ❌ | ✅ | ✅ |
+| Modificar, cambiar el estado y ver inscriptos de sus torneos | ❌ | ✅ | ✅ |
+| Modificar cualquier torneo y cancelar cualquier inscripción | ❌ | ❌ | ✅ |
+| Ver usuarios y cambiar roles | ❌ | ❌ | ✅ |
 
-## Torneos (eventos)
+La matriz está en [`src/config/permissions.js`](src/config/permissions.js). El detalle de middlewares y la diferencia 401/403 está en [`docs/API.md`](docs/API.md#roles-y-autorización).
 
-Un torneo es una fecha o competencia de una liga. Su `category` es la **liga**, que combina división y rama:
+## Seguridad del repositorio
 
-`A-femenino`, `A-masculino`, `B-femenino`, `B-masculino`, `C-femenino`, `C-masculino`, `D-femenino`, `D-masculino`, `E-femenino`, `E-masculino`
-
-### Modelo `Event`
-
-| Campo         | Tipo     | Obligatorio | Reglas |
-|---------------|----------|:-----------:|--------|
-| `title`       | string   | ✅ | |
-| `description` | string   | ✅ | |
-| `category`    | string   | ✅ | Una de las ligas de arriba |
-| `date`        | fecha    | ✅ | ISO 8601 (`2026-11-15T10:00:00Z` o `2026-11-15`). Tiene que ser **futura** |
-| `location`    | string   | ✅ | Sede |
-| `capacity`    | number   | ✅ | Cupo de equipos: entero **mayor a 0** |
-| `price`       | number   | | Inscripción por equipo: **mayor o igual a 0** (por defecto `0`) |
-| `status`      | string   | | `draft`, `published`, `cancelled` o `finished` (por defecto `draft`) |
-| `organizer`   | ObjectId | automático | **Referencia** al `User` que lo creó (no un objeto embebido). Se toma de `req.user`, nunca del body |
-
-### `GET /api/events` – listado con filtros
-
-Pública. Todos los parámetros son opcionales:
-
-| Parámetro  | Ejemplo | Descripción |
-|------------|---------|-------------|
-| `status`   | `published` | `published` (por defecto), `cancelled` o `finished`. Los borradores (`draft`) no son públicos |
-| `category` | `A-femenino` | Liga exacta |
-| `location` | `ferro` | Búsqueda parcial, sin distinguir mayúsculas |
-| `search`   | `apertura` | Busca en el título y la descripción |
-| `dateFrom` | `2026-11-01` | Torneos desde esa fecha (inclusive) |
-| `dateTo`   | `2026-11-30` | Torneos hasta esa fecha (inclusive: si es solo una fecha, incluye el día completo) |
-| `page`     | `2` | Página, desde 1 (por defecto `1`) |
-| `limit`    | `5` | Resultados por página (por defecto `10`, máximo `50`) |
-| `sort`     | `-date` | Campo de orden: `date` (por defecto), `price`, `title`, `capacity` o `createdAt`. Con `-` adelante es descendente |
-
-Un parámetro inválido (estado o liga inexistentes, `page=0`, fecha mal escrita, `dateFrom` posterior a `dateTo`, campo de orden no permitido) responde `400` con el detalle.
-
-`GET /api/events?status=published&category=A-femenino&page=2&limit=5` → `200`:
-
-```json
-{
-  "status": "success",
-  "data": [
-    { "id": "6690...", "title": "Fecha 6", "description": "Liga A femenino", "category": "A-femenino", "date": "2026-11-15T10:00:00.000Z", "location": "Club Ferro", "capacity": 12, "price": 5000, "status": "published", "organizer": "665f2a..." }
-  ],
-  "page": 2,
-  "limit": 5,
-  "total": 12,
-  "totalPages": 3
-}
-```
-
-### `GET /api/events/:id`
-
-Pública. Devuelve el torneo en `payload` (`200`), con `availableSeats` (cupos disponibles calculados con las inscripciones activas). Si no existe, si el id es inválido, o si es un borrador y quien consulta no es su dueño ni un admin → `404`:
-
-```json
-{ "status": "error", "message": "Evento no encontrado" }
-```
-
-### `POST /api/events` 🔒 organizer, admin
-
-Request:
-
-```json
-{ "title": "Torneo Apertura", "description": "Fecha 1 de la liga", "category": "A-femenino", "date": "2026-11-15T10:00:00Z", "location": "Club Ferro", "capacity": 12, "price": 5000, "status": "published" }
-```
-
-`status` es opcional y solo acepta `draft` (por defecto) o `published`: un torneo nuevo no puede nacer cancelado ni finalizado.
-
-Response `201`:
-
-```json
-{ "status": "success", "payload": { "id": "6690...", "title": "Torneo Apertura", "description": "Fecha 1 de la liga", "category": "A-femenino", "date": "2026-11-15T10:00:00.000Z", "location": "Club Ferro", "capacity": 12, "price": 5000, "status": "published", "organizer": "665f2a..." } }
-```
-
-Response `400` (ejemplos):
-
-```json
-{ "status": "error", "message": "Faltan campos obligatorios: description, category" }
-{ "status": "error", "message": "La fecha del evento debe ser futura" }
-{ "status": "error", "message": "La capacidad debe ser un número entero mayor a 0" }
-{ "status": "error", "message": "El precio debe ser un número mayor o igual a 0" }
-```
-
-Response `401` sin sesión / `403` con rol `user`.
-
-### `PUT /api/events/:id` 🔒 dueño o admin
-
-Modifica los datos del torneo. Acepta los mismos campos que el `POST` (todos opcionales) con las mismas validaciones. Por ejemplo, la fecha nueva también tiene que ser futura. El `status` **no** se cambia acá, sino con `PATCH /api/events/:id/status`.
-
-Request:
-
-```json
-{ "capacity": 16, "location": "Club GEBA" }
-```
-
-Response `200` con el torneo actualizado. Errores:
-
-| Código | Caso | Mensaje |
-|--------|------|---------|
-| `400` | Datos inválidos o body con `status` | `El estado se cambia con PATCH /api/events/:id/status` |
-| `403` | Un organizer intenta modificar un torneo de otro organizer | `No tenés permisos para modificar este evento` |
-| `404` | El torneo no existe | `Evento no encontrado` |
-| `409` | El torneo está cancelado o finalizado | `No se puede modificar un evento cancelado` |
-
-### `PATCH /api/events/:id/status` 🔒 dueño o admin
-
-Request:
-
-```json
-{ "status": "cancelled" }
-```
-
-Response `200` con el torneo actualizado. **Cancelar un torneo es cambiar su estado a `cancelled`: los torneos nunca se borran de la base**, así se conserva el historial (y, más adelante, sus inscripciones).
-
-Cambios de estado permitidos:
-
-```
-draft ──────► published ──────► finished
-  │               │
-  └──► cancelled ◄┘
-```
-
-| Desde | Puede pasar a | Condición |
-|-------|---------------|-----------|
-| `draft` | `published`, `cancelled` | Para publicar, la fecha tiene que ser futura |
-| `published` | `cancelled`, `finished` | Para finalizar, la fecha ya tiene que haber pasado |
-| `cancelled` | — | Estado final |
-| `finished` | — | Estado final |
-
-Un cambio no permitido responde `409`:
-
-```json
-{ "status": "error", "message": "No se puede cambiar el estado de un evento cancelado" }
-{ "status": "error", "message": "No se puede pasar un evento de published a draft" }
-{ "status": "error", "message": "No se puede publicar un evento cuya fecha ya pasó" }
-```
-
-### Reglas de negocio
-
-Todas las reglas viven en la capa de servicios ([`events.service.js`](src/services/events.service.js)), no en las rutas ni en los controllers:
-
-- No se puede crear (ni mover) un torneo a una **fecha pasada**.
-- `capacity` tiene que ser un entero **mayor a 0** y `price` **mayor o igual a 0**.
-- La `capacity` no puede bajar por debajo de los cupos ya ocupados por inscripciones activas (`409`).
-- Un torneo nuevo solo puede crearse como `draft` o `published`.
-- **No se puede publicar** un torneo **cancelado o finalizado**, ni uno cuya fecha ya pasó.
-- Los torneos **cancelados o finalizados no se pueden modificar**: son estados finales para conservar el historial tal como quedó. Si hay que cambiar algo, se crea un torneo nuevo.
-- Un torneo solo se puede marcar como `finished` cuando su fecha ya pasó.
-- **Cancelar no borra**: cambia el estado a `cancelled`. La API no tiene ningún `DELETE` de torneos.
-- El `organizer` siempre es el usuario autenticado que lo creó. Un `organizer` solo gestiona sus propios torneos y un `admin` puede gestionar cualquiera (lo validan los middlewares de autorización).
-- El listado nunca devuelve todo junto: siempre está paginado (máximo 50 por página).
-- Los textos de búsqueda (`location`, `search`) se escapan antes de armar la expresión regular, así un texto con caracteres especiales no puede romper ni trabar la consulta.
-
-Códigos de error: `400` datos o parámetros inválidos, `401` sin sesión, `403` sin permiso, `404` torneo inexistente, `409` la acción choca con el estado actual del torneo.
-
-## Inscripciones (tickets)
-
-Un **ticket** es la inscripción de un usuario a un torneo. Relaciona `User` con `Event` usando **referencias** (ObjectId), nunca objetos embebidos.
-
-### Modelo `Ticket`
-
-| Campo             | Tipo     | Descripción |
-|-------------------|----------|-------------|
-| `user`            | ObjectId | Referencia al `User` que se inscribió (sale de `req.user`) |
-| `event`           | ObjectId | Referencia al `Event` |
-| `status`          | string   | `pending`, `confirmed` o `cancelled` |
-| `quantity`        | number   | Cupos que reserva (entero mayor a 0, por defecto `1`) |
-| `reservationCode` | string   | Código único de reserva, por ejemplo `VOL-7QK2MX` |
-| `createdAt`       | fecha    | Fecha de la inscripción (automática) |
-| `cancelledAt`     | fecha    | Fecha de cancelación (`null` mientras esté activo) |
-
-### Estados
-
-| Estado      | Significado | ¿Ocupa cupo? |
-|-------------|-------------|:------------:|
-| `pending`   | Reserva recién creada, mientras se verifica que el cupo alcance (dura milisegundos) | ✅ |
-| `confirmed` | Inscripción confirmada: se envía el email | ✅ |
-| `cancelled` | Inscripción cancelada. El documento **no se borra**: queda con `cancelledAt` | ❌ |
-
-### Rutas
-
-| Método | Ruta                          | Acceso | Descripción |
-|--------|-------------------------------|--------|-------------|
-| POST   | `/api/events/:eid/tickets`    | 🔒 cualquier usuario con sesión | Inscribirse a un torneo |
-| GET    | `/api/tickets/my-tickets`     | 🔒 cualquier usuario con sesión | Mis inscripciones, con los datos del torneo |
-| GET    | `/api/events/:eid/tickets`    | 🔒 `organizer` dueño del torneo o `admin` | Inscriptos de un torneo y resumen de cupos |
-| PATCH  | `/api/tickets/:tid/cancel`    | 🔒 dueño del ticket o `admin` | Cancelar una inscripción |
-
-#### `POST /api/events/:eid/tickets`
-
-Request (el body es opcional; `quantity` vale `1` por defecto):
-
-```json
-{ "quantity": 1 }
-```
-
-Response `201`:
-
-```json
-{ "status": "success", "payload": { "id": "66a1...", "event": "6690...", "user": "665f...", "quantity": 1, "status": "confirmed", "reservationCode": "VOL-7QK2MX", "createdAt": "2026-10-05T14:00:00.000Z", "cancelledAt": null } }
-```
-
-Errores:
-
-| Código | Caso | Mensaje |
-|--------|------|---------|
-| `400` | `quantity` no es un entero mayor a 0 | `La cantidad debe ser un número entero mayor a 0` |
-| `401` | Sin sesión | `No autenticado` |
-| `404` | El torneo no existe (o es un borrador ajeno) | `Evento no encontrado` |
-| `409` | Torneo cancelado | `No es posible inscribirse a un evento cancelado` |
-| `409` | Torneo finalizado | `No es posible inscribirse a un evento finalizado` |
-| `409` | Torneo en borrador o con fecha pasada | `El evento no está disponible para inscripciones` / `No es posible inscribirse a un evento que ya ocurrió` |
-| `409` | Ya tiene una inscripción activa a ese torneo | `Ya tenés una inscripción activa a este evento` |
-| `409` | No alcanza el cupo | `No hay cupos suficientes: quedan 2 y pediste 3` / `No quedan cupos disponibles para este evento` |
-
-#### `GET /api/tickets/my-tickets`
-
-Devuelve solo los tickets del usuario autenticado (activos y cancelados), con los datos básicos del torneo vía `populate`. No incluye datos de otros usuarios.
-
-```json
-{ "status": "success", "payload": [ { "id": "66a1...", "event": { "id": "6690...", "title": "Torneo Apertura", "date": "2026-11-15T10:00:00.000Z", "location": "Club Ferro", "category": "A-femenino", "status": "published" }, "user": "665f...", "quantity": 1, "status": "confirmed", "reservationCode": "VOL-7QK2MX", "createdAt": "...", "cancelledAt": null } ] }
-```
-
-#### `GET /api/events/:eid/tickets` 🔒 dueño o admin
-
-Lista los inscriptos del torneo (con nombre y email, nunca la contraseña) y un resumen de cupos:
-
-```json
-{ "status": "success", "payload": [ { "id": "66a1...", "user": { "id": "665f...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com" }, "quantity": 1, "status": "confirmed", "...": "..." } ], "summary": { "capacity": 12, "occupied": 7, "available": 5 } }
-```
-
-Un `user` recibe `403` (`No tenés permisos para realizar esta acción`). Un `organizer` que no es dueño del torneo también recibe `403` (`No tenés permisos para modificar este evento`).
-
-#### `PATCH /api/tickets/:tid/cancel` 🔒 dueño del ticket o admin
-
-Cambia el `status` a `cancelled`, registra `cancelledAt` y **le envía un email de cancelación al dueño del ticket**. **No borra el documento.** Response `200` con el ticket actualizado.
-
-| Código | Caso | Mensaje |
-|--------|------|---------|
-| `403` | El ticket es de otro usuario (y no es admin) | `No tenés permisos para cancelar esta inscripción` |
-| `404` | El ticket no existe | `Inscripción no encontrada` |
-| `409` | Ya estaba cancelado | `La inscripción ya está cancelada` |
-| `409` | El torneo ya ocurrió | `No se puede cancelar una inscripción de un evento que ya ocurrió` |
-
-### Flujo de inscripción
-
-Todas las validaciones están en [`tickets.service.js`](src/services/tickets.service.js), no en el controller ni en la ruta:
-
-1. `authenticate` valida la sesión (`401`).
-2. Se valida `quantity` (entero mayor a 0).
-3. El torneo existe (`404`) y está `published`, no cancelado ni finalizado, y con fecha futura (`409`).
-4. El usuario no tiene otro ticket activo para ese torneo (`409`). La regla es **una inscripción activa por usuario y torneo**; para reservar más lugares se usa `quantity`.
-5. Hay cupo suficiente: `cupos disponibles ≥ quantity` (`409`).
-6. Se crea el ticket como `pending` con un `reservationCode` único y se vuelve a verificar el cupo (ver abajo).
-7. Pasa a `confirmed` y se envía el **email de confirmación**.
-
-### Regla de cupos
-
-```
-cupos ocupados   = suma de quantity de los tickets del torneo con status pending o confirmed
-cupos disponibles = capacity − cupos ocupados
-```
-
-- Los tickets **`cancelled` no se cuentan**, así que **al cancelar, el cupo queda libre automáticamente** y otra persona se puede inscribir.
-- El cupo se calcula siempre a partir de los tickets. No hay un contador aparte que se pueda desincronizar.
-- `GET /api/events/:id` incluye `availableSeats` con los cupos disponibles.
-- Un torneo no puede bajar su `capacity` por debajo de los cupos ya ocupados (`409`).
-
-**Inscripciones simultáneas:** si quedan 2 lugares y 10 personas se inscriben en el mismo instante, todas podrían ver "hay lugar". Para evitar la sobreventa:
-
-- **Cupo:** el ticket se crea primero como `pending` y después se suman los cupos de las reservas hechas **hasta ese ticket inclusive**. Si esa suma supera la capacidad, el ticket se cancela y se responde `409`. Si no, pasa a `confirmed`. Así se confirman las primeras reservas y nunca se supera la capacidad.
-- **Duplicados:** un índice único parcial en MongoDB (`user + event`, solo para tickets activos) impide que el mismo usuario tenga dos inscripciones activas, aunque mande varias a la vez (doble clic).
-
-Probado con 10 inscripciones simultáneas a un torneo de cupo 3: se confirmaron exactamente 3 y las otras 7 recibieron `409`.
-
-### Emails (Nodemailer)
-
-Se envían dos notificaciones, con el torneo, la liga, la fecha, la sede, los cupos y el código de reserva:
-
-| Email | Cuándo | A quién |
-|-------|--------|---------|
-| **Inscripción confirmada** | Al confirmarse una inscripción | Al usuario inscripto |
-| **Inscripción cancelada** | Al cancelar un ticket | Al dueño del ticket. Si lo canceló un admin, el email lo aclara ("fue cancelada por la administración de la liga") |
-
-Los envíos se hacen en segundo plano: si el servidor de correo falla, la inscripción o la cancelación quedan hechas igual y el error se registra en la consola.
-
-Las credenciales se leen **solo de variables de entorno** (nunca están en el código):
-
-| Variable    | Descripción | Ejemplo |
-|-------------|-------------|---------|
-| `MAIL_HOST` | Servidor SMTP | `smtp.gmail.com` |
-| `MAIL_PORT` | Puerto (`587` STARTTLS, `465` SSL) | `587` |
-| `MAIL_USER` | Usuario SMTP | `tu_cuenta@gmail.com` |
-| `MAIL_PASS` | Contraseña SMTP (en Gmail, una contraseña de aplicación) | `abcd efgh ijkl mnop` |
-| `MAIL_FROM` | Remitente que ve el usuario | `"Liga de Vóley <tu_cuenta@gmail.com>"` |
-
-Si `MAIL_HOST` está vacío, la API funciona igual y solo omite los emails (avisa en la consola).
-
-**Gmail:** activá la verificación en dos pasos y creá una contraseña de aplicación en [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords). Esa contraseña de 16 letras va en `MAIL_PASS`; la contraseña normal de Gmail no funciona.
-
-**Para probar sin una casilla real:** [Ethereal](https://ethereal.email) crea casillas de prueba gratis. Los emails no llegan a nadie, pero se ven en su web, y la consola del servidor muestra el link de vista previa de cada envío.
-
-## Sesiones y usuarios
-
-### `POST /api/sessions/register`
-
-| Campo        | Tipo   | Obligatorio | Reglas |
-|--------------|--------|:-----------:|--------|
-| `first_name` | string | ✅ | No puede estar vacío |
-| `last_name`  | string | ✅ | No puede estar vacío |
-| `email`      | string | ✅ | Formato de email válido. Se guarda normalizado (sin espacios y en minúsculas) |
-| `password`   | string | ✅ | Mínimo 8 caracteres. Se guarda hasheada con bcrypt |
-
-- El `role` **no se puede elegir** desde el registro público: siempre se crea como `user`, aunque el body traiga otro valor.
-- La respuesta **nunca incluye la contraseña**, ni en texto plano ni hasheada.
-
-Request:
-
-```json
-{ "first_name": "Ana", "last_name": "Pérez", "email": "Ana@Mail.com ", "password": "Secreta123" }
-```
-
-Response `201`:
-
-```json
-{ "status": "success", "payload": { "id": "665f2a...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com", "role": "user" } }
-```
-
-Response `400` (uno de estos mensajes):
-
-```json
-{ "status": "error", "message": "Faltan campos obligatorios" }
-{ "status": "error", "message": "El formato del email es inválido" }
-{ "status": "error", "message": "La contraseña debe tener al menos 8 caracteres" }
-```
-
-Response `409`:
-
-```json
-{ "status": "error", "message": "El email ya está registrado" }
-```
-
-### `POST /api/sessions/login`
-
-Request:
-
-```json
-{ "email": "ana@mail.com", "password": "Secreta123" }
-```
-
-Response `200` – además setea la cookie `currentUser` con el JWT:
-
-```json
-{ "status": "success", "message": "Login correcto" }
-```
-
-```
-Set-Cookie: currentUser=eyJhbGciOi...; Max-Age=3600; Path=/; HttpOnly; SameSite=Lax
-```
-
-Response `400` – falta el email o la contraseña:
-
-```json
-{ "status": "error", "message": "Email y contraseña son obligatorios" }
-```
-
-Response `401` – email inexistente **o** contraseña incorrecta (mismo mensaje en los dos casos, para no revelar qué emails están registrados):
-
-```json
-{ "status": "error", "message": "Credenciales inválidas" }
-```
-
-### `GET /api/sessions/current`
-
-Requiere la cookie `currentUser`. El navegador, Postman e Insomnia la envían solos después del login.
-
-Response `200`:
-
-```json
-{ "status": "success", "payload": { "id": "665f2a...", "email": "ana@mail.com", "role": "user" } }
-```
-
-Response `401` – sin cookie, o token inválido, manipulado o expirado:
-
-```json
-{ "status": "error", "message": "No autenticado" }
-```
-
-### `POST /api/sessions/logout`
-
-Response `200` – borra la cookie `currentUser`:
-
-```json
-{ "status": "success", "message": "Sesión cerrada" }
-```
-
-### `GET /api/users` 🔒 admin
-
-Response `200` (nunca incluye `password`):
-
-```json
-{ "status": "success", "payload": [ { "id": "665f2a...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com", "role": "user" } ] }
-```
-
-Response `403` con rol `user` u `organizer`:
-
-```json
-{ "status": "error", "message": "No tenés permisos para realizar esta acción" }
-```
-
-### `PATCH /api/users/:uid/role` 🔒 admin
-
-Request:
-
-```json
-{ "role": "organizer" }
-```
-
-Response `200`:
-
-```json
-{ "status": "success", "payload": { "id": "665f2a...", "first_name": "Ana", "last_name": "Pérez", "email": "ana@mail.com", "role": "organizer" } }
-```
-
-Response `400`:
-
-```json
-{ "status": "error", "message": "El rol indicado no es válido" }
-{ "status": "error", "message": "No podés cambiar tu propio rol" }
-```
-
-Response `404`:
-
-```json
-{ "status": "error", "message": "Usuario no encontrado" }
-```
-
-## Roles y autorización
-
-### Roles
-
-| Rol         | En la liga de vóley | Cómo se obtiene |
-|-------------|---------------------|-----------------|
-| `user`      | Jugador/a: consulta torneos (más adelante se inscribe) | Por defecto al registrarse |
-| `organizer` | Organizador/a de torneos: crea y gestiona sus torneos | Lo asigna un `admin` |
-| `admin`     | Administración de la liga: gestiona todo | Lo asigna otro `admin` o el script `set-role` |
-
-El **registro público siempre crea `user`**: si el body trae `"role": "admin"` u `"organizer"`, se ignora.
-
-### Matriz de permisos
-
-| Acción                              | `user` | `organizer` | `admin` | Ruta |
-|-------------------------------------|:------:|:-----------:|:-------:|------|
-| Consultar torneos publicados        | ✅ | ✅ | ✅ | `GET /api/events` |
-| Crear torneos                       | ❌ | ✅ | ✅ | `POST /api/events` |
-| Modificar / cancelar torneos propios | ❌ | ✅ | ✅ | `PUT /api/events/:id`, `PATCH /api/events/:id/status` |
-| Modificar / cancelar cualquier torneo | ❌ | ❌ | ✅ | ídem |
-| Ver todos los usuarios              | ❌ | ❌ | ✅ | `GET /api/users` |
-| Cambiar el rol de un usuario        | ❌ | ❌ | ✅ | `PATCH /api/users/:uid/role` |
-| Inscribirse a un torneo             | ✅ | ✅ | ✅ | `POST /api/events/:eid/tickets` |
-| Ver mis inscripciones               | ✅ | ✅ | ✅ | `GET /api/tickets/my-tickets` |
-| Cancelar mi inscripción             | ✅ | ✅ | ✅ | `PATCH /api/tickets/:tid/cancel` |
-| Cancelar la inscripción de otro     | ❌ | ❌ | ✅ | ídem |
-| Ver inscriptos de mis torneos       | ❌ | ✅ | ✅ | `GET /api/events/:eid/tickets` |
-| Ver inscriptos de cualquier torneo  | ❌ | ❌ | ✅ | ídem |
-
-La matriz vive en código en [`src/config/permissions.js`](src/config/permissions.js). Las rutas usan esas listas en lugar de escribir los roles a mano:
-
-```js
-router.post('/', authenticate, authorizeRoles(...PERMISSIONS.createEvent), createEvent)
-```
-
-### Middlewares
-
-Las rutas protegidas encadenan los middlewares en este orden: **autenticación → autorización por rol → autorización por propiedad → controller**.
-
-| Middleware | Archivo | Qué hace | Error |
-|------------|---------|----------|-------|
-| `authenticate` | [`auth.middleware.js`](src/middlewares/auth.middleware.js) | Ejecuta la estrategia `current` de Passport: lee el JWT de la cookie, lo valida y deja `{ id, email, role }` en `req.user` | `401` |
-| `authorizeRoles(...roles)` | [`authorize.middleware.js`](src/middlewares/authorize.middleware.js) | Recibe los roles permitidos y los compara con `req.user.role`. Si no hay una regla que permita la acción, la rechaza (cerrado por defecto) | `403` |
-| `authorizeEventOwnerOrAdmin` | [`authorize.middleware.js`](src/middlewares/authorize.middleware.js) | Busca el torneo y permite seguir solo si `req.user` es su `organizer` o tiene `manageAnyEvent` (admin) | `403` / `404` |
-| `optionalAuthenticate` | [`auth.middleware.js`](src/middlewares/auth.middleware.js) | Para rutas públicas (`GET /api/events/:id`): si hay sesión válida completa `req.user`, y si no sigue como anónimo. Sirve para que el dueño o un admin puedan ver borradores | — |
-
-```js
-router.put(
-  '/:id',
-  authenticate,                                    // 401 si no hay sesión
-  authorizeRoles(...PERMISSIONS.manageOwnEvent),   // 403 si es user
-  authorizeEventOwnerOrAdmin,                      // 403 si el torneo es de otro organizer
-  updateEvent
-)
-```
-
-El rol se lee **de la base de datos** en cada request (la estrategia `current` busca al usuario), no del JWT. Por eso, si un admin cambia el rol de alguien, el cambio aplica en la próxima petición, sin volver a hacer login.
-
-### Diferencia entre 401 y 403
-
-| Código | Significado | Cuándo | Mensaje |
-|--------|-------------|--------|---------|
-| **401 Unauthorized** | **No autenticado**: el servidor no sabe quién sos | No hay cookie, o el token es inválido, manipulado o expiró | `No autenticado` |
-| **403 Forbidden** | **Sin permiso**: el servidor sabe quién sos, pero tu rol no puede hacer esa acción | Un `user` crea un torneo, un `organizer` entra a `/api/users` o modifica un torneo ajeno | `No tenés permisos para realizar esta acción` / `No tenés permisos para modificar este evento` |
-
-Con un 401 la solución es iniciar sesión. Con un 403, volver a loguearse no cambia nada: hace falta otro rol.
-
-### Crear el primer admin
-
-Como el registro público siempre crea `user`, el primer `admin` se asigna con un script. El usuario tiene que estar registrado antes:
-
-```bash
-npm run set-role -- admin@mail.com admin
-```
-
-Después, ese admin puede asignar roles desde la API con `PATCH /api/users/:uid/role` (por ejemplo, para convertir a alguien en `organizer`). El script acepta cualquier rol: `user`, `organizer` o `admin`.
-
-## Autenticación con Passport
-
-Toda la autenticación pasa por estrategias de **Passport.js**, centralizadas en [`src/config/passport.config.js`](src/config/passport.config.js). En `app.js` solo se inicializa Passport (`app.use(initializePassport())`), y ninguna estrategia vive ahí. Todas se usan con `session: false`: la sesión la representa el JWT de la cookie, no una sesión en memoria del servidor.
-
-| Estrategia | Tipo | Ruta | Qué hace | Deja en `req.user` |
-|------------|------|------|----------|--------------------|
-| `register` | `passport-local` | `POST /api/sessions/register` | Valida los campos, normaliza el email, rechaza duplicados, hashea la contraseña con bcrypt y crea el usuario con rol `user` | Usuario creado (sin `password`) |
-| `login` | `passport-local` | `POST /api/sessions/login` | Valida que vengan email y contraseña y compara la contraseña con bcrypt. Si algo no coincide: `401 Credenciales inválidas` | `{ id, email, role }` |
-| `current` | `passport-jwt` | `GET /api/sessions/current` | Extrae el JWT de la cookie `currentUser`, verifica firma y expiración y confirma en la base que el usuario sigue existiendo | `{ id, email, role }` |
-
-- **Quién genera el JWT:** el **controller** de login, no la estrategia. La estrategia solo valida las credenciales; después el controller firma el token con `req.user` y setea la cookie.
-- **Logout:** no pasa por Passport. Solo borra la cookie.
-- **Rutas limpias:** cada ruta delega en `passportCall(estrategia)` ([`auth.middleware.js`](src/middlewares/auth.middleware.js)). Este middleware ejecuta `passport.authenticate(estrategia, { session: false }, callback)` y, si la estrategia falla, deriva el error al manejador central. Así se mantienen las mismas respuestas JSON (`400`, `401`, `409`) de las entregas anteriores, en lugar del `401 Unauthorized` en texto plano que Passport responde por defecto.
-- **Credenciales solo por body:** `passport-local` también acepta email y contraseña por query string (`?email=...&password=...`). Las estrategias validan siempre `req.body` para que nunca viaje una contraseña en la URL.
-
-### Preparado para providers externos
-
-El sistema queda **preparado para sumar providers externos** como Google o GitHub (`passport-google-oauth20`, `passport-github2`) **sin tocar `app.js`**. En `passport.config.js` las estrategias se registran desde un único objeto:
-
-```js
-const strategies = {
-  register: registerStrategy,
-  login: loginStrategy,
-  current: currentStrategy
-  // github: githubStrategy  ← un provider nuevo se agrega acá
-}
-```
-
-Para un provider nuevo alcanza con crear su estrategia en ese archivo, sumarla al objeto y agregar sus rutas en `sessions.router.js` usando `passportCall('github')`. Al final del flujo, el mismo controller de login genera el JWT y la cookie.
-
-## Seguridad de la sesión
-
-- **JWT:** se firma con `JWT_SECRET` (HS256) y expira según `JWT_EXPIRES_IN`. El payload tiene solo `{ id, email, role }`, nunca la contraseña.
-- **Cookie `currentUser`:**
-  - `httpOnly: true`: el JavaScript del navegador no puede leerla, lo que protege el token ante ataques XSS.
-  - `sameSite: 'lax'`: no se envía en peticiones originadas desde otros sitios (protección básica contra CSRF).
-  - `maxAge: 3600000`: dura 1 hora.
-  - `secure`: solo se activa con `NODE_ENV=production`, para que la cookie viaje únicamente por HTTPS.
-- **Estrategia `current`:** si no hay cookie, si el token es inválido, manipulado o expiró, o si el usuario ya no existe en la base, responde `401 No autenticado`.
-- **Login:** cuando el email no existe, igual se ejecuta una comparación bcrypt. Así el tiempo de respuesta es el mismo que con una contraseña incorrecta y tampoco se puede deducir por tiempo si un email está registrado.
-
-## Cómo probar
-
-**Desde la página de inicio:** `http://localhost:8080/` tiene los formularios de registro y login y botones para `current` y `logout`.
-
-**Con Postman / Insomnia:** guardan la cookie automáticamente después del login. Orden sugerido:
-
-1. `POST /api/sessions/register` con el body JSON de arriba → `201`
-2. `POST /api/sessions/login` → `200` (en la pestaña *Cookies* aparece `currentUser`)
-3. `GET /api/sessions/current` → `200` con `{ id, email, role }`
-4. `POST /api/sessions/logout` → `200`
-5. `GET /api/sessions/current` → `401`
-
-**Roles:**
-
-1. Registrar tres usuarios, por ejemplo `admin@mail.com`, `organizador@mail.com` y `jugadora@mail.com`.
-2. Convertir al primero en admin: `npm run set-role -- admin@mail.com admin`.
-3. Login como admin → `GET /api/users` (`200`) para ver los ids → `PATCH /api/users/<id del organizador>/role` con `{ "role": "organizer" }`.
-4. Login como jugadora → `POST /api/events` → `403`. `GET /api/users` → `403`.
-5. Login como organizador → `POST /api/events` → `201`. `GET /api/users` → `403`.
-6. Con otro organizer, `PUT /api/events/<id>` de un torneo ajeno → `403`.
-
-**Inscripciones:**
-
-1. Como organizador, crear un torneo publicado con `capacity: 2` y copiar su `id`.
-2. Como jugadora, `POST /api/events/<id>/tickets` → `201` y llega el email de confirmación.
-3. Repetir el mismo POST → `409` (inscripción duplicada).
-4. Con otro usuario, `POST` con `{ "quantity": 2 }` → `409` (queda 1 cupo).
-5. `GET /api/tickets/my-tickets` → se ve el ticket con los datos del torneo.
-6. Como organizador, `GET /api/events/<id>/tickets` → inscriptos y `summary` de cupos. Como jugadora → `403`.
-7. Como jugadora, `PATCH /api/tickets/<ticketId>/cancel` → `200`, y el cupo vuelve a estar disponible.
-
-**Con curl:** `-c` guarda la cookie en un archivo y `-b` la envía.
-
-```bash
-curl -X POST http://localhost:8080/api/sessions/register -H "Content-Type: application/json" -d "{\"first_name\":\"Ana\",\"last_name\":\"Pérez\",\"email\":\"ana@mail.com\",\"password\":\"Secreta123\"}"
-curl -c cookies.txt -X POST http://localhost:8080/api/sessions/login -H "Content-Type: application/json" -d "{\"email\":\"ana@mail.com\",\"password\":\"Secreta123\"}"
-curl -b cookies.txt http://localhost:8080/api/sessions/current
-curl -b cookies.txt -c cookies.txt -X POST http://localhost:8080/api/sessions/logout
-curl -b cookies.txt http://localhost:8080/api/sessions/current
-```
-
-> En Windows usá `curl.exe` desde PowerShell (en PowerShell, `curl` es un alias de otro comando).
-
-### Verificar la cookie HttpOnly con curl
-
-**1. Login mostrando los headers de la respuesta** (`-i`) y guardando la cookie en `cookies.txt` (`-c`):
-
-```bash
-curl -i -c cookies.txt -X POST http://localhost:8080/api/sessions/login -H "Content-Type: application/json" -d "{\"email\":\"ana@mail.com\",\"password\":\"Secreta123\"}"
-```
-
-En la respuesta aparece el header `Set-Cookie` con los flags de seguridad:
-
-```
-HTTP/1.1 200 OK
-Set-Cookie: currentUser=eyJhbGciOi...; Max-Age=3600; Path=/; Expires=...; HttpOnly; SameSite=Lax
-
-{"status":"success","message":"Login correcto"}
-```
-
-**2. Mirar la cookie guardada.** En el archivo de cookies de curl, la línea empieza con `#HttpOnly_`, que es como curl marca las cookies HttpOnly:
-
-```bash
-cat cookies.txt
-```
-
-```
-#HttpOnly_localhost   FALSE   /   FALSE   1791508618   currentUser   eyJhbGciOi...
-```
-
-**3. Reutilizar la cookie** (`-b`) para llamar a `/current`, como haría el navegador:
-
-```bash
-curl -b cookies.txt http://localhost:8080/api/sessions/current
-```
-
-```json
-{"status":"success","payload":{"id":"6ac8...","email":"ana@mail.com","role":"user"}}
-```
-
-**4. Logout actualizando el archivo** (`-b` y `-c` juntos). El servidor borra la cookie y curl la saca de `cookies.txt`, así que el siguiente `/current` da `401`:
-
-```bash
-curl -b cookies.txt -c cookies.txt -X POST http://localhost:8080/api/sessions/logout
-curl -b cookies.txt http://localhost:8080/api/sessions/current
-```
-
-```json
-{"status":"error","message":"No autenticado"}
-```
-
-## Tests automatizados
-
-```bash
-npm test
-```
-
-Son **30 tests de integración** hechos con `node:test` (el runner que trae Node) y `supertest`, que hacen requests HTTP reales contra la app:
-
-- Cada archivo levanta su propio **MongoDB en memoria** (`mongodb-memory-server`). No hace falta `.env` ni conexión a Atlas, y no se toca ninguna base real.
-- Los **emails se reemplazan por mocks**: no se envía ningún mail, pero los tests verifican que se dispararon el de confirmación y el de cancelación.
-
-| Archivo | Qué cubre |
-|---------|-----------|
-| [`auth.test.js`](tests/auth.test.js) | Registro sin `password` y con email normalizado, duplicado `409`, validaciones `400`, cookie `currentUser` HttpOnly, `/current` con `{ id, email, role }`, credenciales inválidas con mensaje genérico, logout → `401`, token manipulado → `401` |
-| [`authorization.test.js`](tests/authorization.test.js) | `401` sin sesión en todas las rutas privadas; `403` con rol insuficiente (crear evento como user, ver usuarios como organizer, cambiar roles como organizer); modificar evento ajeno (`403` organizer / `200` admin); cancelar ticket ajeno (`403` user / `200` admin); un cambio de rol aplica en la misma sesión |
-| [`events.test.js`](tests/events.test.js) | Fecha pasada, `capacity` y `price` inválidos `400`; `organizer` del body ignorado y respuesta con la forma del DTO; evento cancelado `409`; transiciones inválidas `409`; borradores no públicos; filtros, paginación y orden; parámetros inválidos `400`; `404` sin errores `500` |
-| [`tickets.test.js`](tests/tickets.test.js) | Inscripción `201` + email; duplicada `409`; sin cupo `409`; evento cancelado `409` e inexistente `404`; cancelación con `cancelledAt`, email y cupo liberado; cancelar dos veces `409`; inscriptos solo para dueño o admin y sin `password`; `my-tickets` con el DTO del evento; 8 inscripciones simultáneas con cupo 3 → exactamente 3 confirmadas |
-
-## Casos probados
-
-| Caso | Resultado |
-|------|-----------|
-| Registro exitoso | `201`, email normalizado, `role: "user"`, sin `password` |
-| Registro con campos faltantes o vacíos | `400` – Faltan campos obligatorios |
-| Registro con email inválido | `400` – El formato del email es inválido |
-| Registro con email ya registrado (aunque cambien mayúsculas) | `409` – El email ya está registrado |
-| Registro con `"role": "admin"` en el body | Se ignora: el usuario se crea como `user` |
-| Contraseña en la base de datos | Hash bcrypt (`$2b$10$...`), nunca texto plano |
-| Registro → login → `current` → logout → `current` | `201` → `200` (cookie) → `200` → `200` → `401` |
-| Login con email inexistente | `401` – Credenciales inválidas |
-| Login con contraseña incorrecta | `401` – Credenciales inválidas |
-| `current` sin cookie | `401` – No autenticado |
-| `current` con token manipulado (rol cambiado a `admin`) | `401` – No autenticado |
-| `current` con token expirado | `401` – No autenticado |
-| `current` con token firmado con otra clave o con `alg: none` | `401` – No autenticado |
-| `current` con token válido de un usuario que ya fue borrado | `401` – No autenticado |
-| Login con credenciales en la query string en vez del body | `400` – Email y contraseña son obligatorios |
-| `GET /api/users` con rol `organizer` | `403` |
-| `GET /api/users` con rol `admin` | `200`, sin `password` |
-| Rutas privadas (`POST /api/events`, `PUT /api/events/:id`, `PATCH /api/events/:id/status`, `GET /api/users`, `/current`) sin cookie | `401` – No autenticado |
-| `organizer` intenta cambiar un rol | `403` |
-| `admin` cambia su propio rol / rol inexistente | `400` |
-| `admin` promueve un `user` a `organizer` | `200` y la misma sesión ya puede crear torneos |
-| Crear torneo con rol `user` | `403` – No tenés permisos para realizar esta acción |
-| Crear torneo con fecha pasada | `400` – La fecha del evento debe ser futura |
-| Crear torneo con `capacity: 0` / `capacity: 2.5` / `price: -1` | `400` con el detalle |
-| Crear torneo sin campos obligatorios / con `status: cancelled` | `400` |
-| Crear torneo mandando otro `organizer` en el body | `201` y se ignora: queda el usuario autenticado |
-| `organizer` modifica su propio torneo | `200` |
-| `organizer` modifica o cambia el estado de un torneo ajeno | `403` – No tenés permisos para modificar este evento |
-| `admin` modifica un torneo de otro organizer | `200` |
-| Cambiar el estado de un torneo cancelado / finalizado | `409` – No se puede cambiar el estado de un evento cancelado |
-| Modificar (`PUT`) un torneo cancelado / finalizado | `409` – No se puede modificar un evento cancelado |
-| Cancelar un torneo | `200` con `status: cancelled`, y el documento sigue en la base |
-| `published → draft`, mismo estado, `published → finished` con fecha futura, publicar con fecha pasada | `409` con el detalle |
-| `PUT` con `status` en el body / sin campos / con fecha pasada | `400` |
-| `?status=published&category=A-femenino&page=2&limit=5` | `200`, torneos 6 a 10 de 12, con `data`, `page`, `limit`, `total`, `totalPages` |
-| Filtros `location` (parcial), `search`, `dateFrom`/`dateTo`, `sort=-price` | `200` con los torneos que corresponden |
-| `?status=draft`, liga o `sort` inválidos, `page=0`, fecha inválida, `dateFrom > dateTo`, parámetro repetido | `400` con el detalle |
-| `?limit=1000` | `200` con `limit: 50` |
-| `?location=(a+)+$` (regex maliciosa) | `200`: se busca como texto literal |
-| Torneo inexistente o id inválido | `404` – Evento no encontrado |
-| Borrador por id: anónimo u otro organizer / dueño o admin | `404` / `200` |
-| Inscripción exitosa | `201`, ticket `confirmed` con `reservationCode` y email recibido |
-| Inscripción sin sesión | `401` |
-| Inscripción a torneo inexistente | `404` |
-| Inscripción a torneo cancelado / finalizado / borrador | `409` / `409` / `404` (o `409` si es el dueño) |
-| Inscripción sin cupo suficiente | `409` – No hay cupos suficientes: quedan 2 y pediste 3 |
-| Inscripción duplicada activa | `409` – Ya tenés una inscripción activa a este evento |
-| `quantity` 0, decimal o texto | `400` |
-| Cancelación propia → otro usuario se inscribe en ese cupo | `200` → `201` |
-| Volver a inscribirse después de cancelar | `201` |
-| Cancelar un ticket ajeno como `user` | `403` – No tenés permisos para cancelar esta inscripción |
-| `admin` cancela un ticket ajeno | `200`, con `cancelledAt`, y el documento sigue en la base |
-| Cancelar un ticket ya cancelado / inexistente | `409` / `404` |
-| `GET /api/events/:eid/tickets` como `user` / organizer de otro torneo | `403` / `403` |
-| `GET /api/events/:eid/tickets` como dueño o admin | `200` con inscriptos (sin `password`) y `summary` de cupos |
-| `GET /api/tickets/my-tickets` | `200`, solo los propios, con título, fecha y sede del torneo |
-| Bajar la `capacity` de un torneo por debajo de lo ocupado | `409` |
-| 10 inscripciones simultáneas a un torneo con cupo 3 | 3 × `201` y 7 × `409`: nunca se supera el cupo |
-| El mismo usuario manda 5 inscripciones simultáneas | 1 × `201` y 4 × `409`: un solo ticket activo |
-| Flujo completo: registro → login → crear torneo → inscribirse → mis tickets → cancelar | `201` → `200` → `201` → `201` → `200` → `200` |
-| `/current` | Solo `id`, `email` y `role` (sin `password`) |
-| Inscriptos con populate del usuario | Solo `id`, `first_name`, `last_name` y `email` (sin `password`) |
-| Mis tickets con populate del torneo | Solo los datos básicos del torneo (`EventSummaryDTO`) |
-| Todas las respuestas del flujo | Ninguna contiene `password` ni un hash bcrypt |
-| Errores de negocio (duplicado, fecha pasada, cancelar dos veces, id inválido) | `409` / `400` / `409` / `404`: nunca `500` |
-
-## Evidencia
-
-Capturas de la API funcionando contra MongoDB Atlas, tomadas desde la página de inicio (`http://localhost:8080/`). Las imágenes están en [`docs/evidencia/`](docs/evidencia/).
-
-### Pre-entrega 1 – Estructura base
-
-`GET /api/health` → `200`
-
-![GET /api/health](docs/evidencia/pe1-health.png)
-
-### Pre-entrega 2 – Registro seguro
-
-Registro → `201`, con el email normalizado y **sin `password`** en la respuesta:
-
-![Registro sin password](docs/evidencia/pe2-registro.png)
-
-Usuarios en MongoDB Atlas, con la contraseña **hasheada con bcrypt** (`$2b$10$…`) y no en texto plano:
-
-![Contraseña hasheada en Atlas](docs/evidencia/pe2-atlas-hash.png)
-
-### Pre-entrega 3 – JWT y cookies
-
-Login → `200`:
-
-![Login](docs/evidencia/pe3-login.png)
-
-Cookie `currentUser` con **HttpOnly** y SameSite `Lax`:
-
-![Cookie currentUser HttpOnly](docs/evidencia/pe3-cookie.png)
-
-`GET /api/sessions/current` con la cookie → `200` con `{ id, email, role }`:
-
-![current 200](docs/evidencia/pe3-current-200.png)
-
-`GET /api/sessions/current` sin cookie → `401`:
-
-![current 401](docs/evidencia/pe3-current-401.png)
-
-### Pre-entrega 4 – Passport
-
-Flujo completo con las estrategias de Passport: registro (PE2) → login → `current` `200` (PE3) → **logout** → `current` `401` (PE3).
-
-![Logout](docs/evidencia/pe4-logout.png)
-
-### Pre-entrega 5 – Roles y autorización
-
-`POST /api/events` con rol `user` → `403`:
-
-![Crear evento como user](docs/evidencia/pe5-crear-evento-user-403.png)
-
-`POST /api/events` con rol `organizer` → `201`, con `organizer` igual al usuario autenticado:
-
-![Crear evento como organizer](docs/evidencia/pe5-crear-evento-organizer-201.png)
-
-`GET /api/users` con rol `organizer` → `403`:
-
-![Usuarios como organizer](docs/evidencia/pe5-users-organizer-403.png)
-
-`GET /api/users` con rol `admin` → `200`:
-
-![Usuarios como admin](docs/evidencia/pe5-users-admin-200.png)
-
-### Pre-entrega 6 – Eventos y lógica de negocio
-
-Un `admin` modifica el torneo de otro organizador → `200`:
-
-![Admin modifica torneo ajeno](docs/evidencia/pe6-admin-modifica-ajeno-200.png)
-
-Un `organizer` intenta modificar un torneo ajeno → `403`:
-
-![Organizer modifica torneo ajeno](docs/evidencia/pe6-organizer-modifica-ajeno-403.png)
-
-Cambiar el estado de un torneo cancelado → `409`:
-
-![Estado de torneo cancelado](docs/evidencia/pe6-estado-cancelado-409.png)
-
-Listado con filtros y paginación, con `data`, `page`, `limit`, `total` y `totalPages`:
-
-![Listado paginado](docs/evidencia/pe6-listado-paginado.png)
-
-### Pre-entrega 7 – Inscripciones y cupos
-
-Inscripción → `201`, ticket `confirmed` con código de reserva:
-
-![Inscripción](docs/evidencia/pe7-inscripcion-201.png)
-
-Email de confirmación recibido (Nodemailer):
-
-![Email de confirmación](docs/evidencia/pe7-email.png)
-
-Inscripción duplicada → `409`:
-
-![Inscripción duplicada](docs/evidencia/pe7-duplicada-409.png)
-
-Sin cupo suficiente → `409` con mensaje claro:
-
-![Sin cupo](docs/evidencia/pe7-sin-cupo-409.png)
-
-Un `user` intenta ver los inscriptos de un torneo → `403`:
-
-![Inscriptos como user](docs/evidencia/pe7-inscriptos-user-403.png)
-
-Cancelación propia → `200`, con `status: cancelled` y `cancelledAt` (el ticket no se borra):
-
-![Cancelar inscripción](docs/evidencia/pe7-cancelar-200.png)
-
-Nueva inscripción al mismo torneo → `201`: el cupo se liberó al cancelar:
-
-![Reinscripción](docs/evidencia/pe7-reinscripcion-201.png)
-
-`GET /api/tickets/my-tickets` → los tickets propios con los datos del torneo (populate):
-
-![Mis tickets](docs/evidencia/pe7-my-tickets.png)
-
-El organizador dueño ve los inscriptos y el resumen de cupos (los cancelados no ocupan cupo):
-
-![Inscriptos como organizer](docs/evidencia/pe7-inscriptos-organizer-200.png)
+- El archivo **`.env` no se sube** al repositorio: está en el `.gitignore` y contiene las credenciales reales (MongoDB, `JWT_SECRET`, email).
+- En el repo solo está **`.env.example`**, con las variables necesarias y valores de ejemplo.
+- **`node_modules` tampoco se sube**: se instala con `npm install`.
+- **Ninguna credencial está escrita en el código**: todo se lee de variables de entorno (`src/config/config.js`).
+- Las contraseñas de los usuarios se guardan **hasheadas con bcrypt** y **ninguna respuesta de la API incluye `password`**.
 
 ## Entregas
 
@@ -1200,6 +396,11 @@ Mejoras hechas a partir de las correcciones de las pre-entregas:
 |-------------|------------|-----------------|
 | 1 | La conexión a MongoDB delegaba el manejo de errores al `try/catch` de `server.js` | `connectDB` maneja sus propios errores y los traduce a mensajes que dicen qué revisar: `MONGO_URL` con formato inválido, usuario o contraseña incorrectos, host inexistente, conexión rechazada o timeout (con la pista de Network Access en Atlas). Además avisa si la conexión se pierde o se recupera con el servidor andando ([`database.js`](src/config/database.js)) |
 | 3 | Documentar qué tag corresponde a cada pre-entrega | Tabla de tags con links y comandos `git checkout` / `git diff` ([Entregas](#entregas)) |
-| 3 | Mostrar cómo verificar la cookie HttpOnly con curl | Sección [Verificar la cookie HttpOnly con curl](#verificar-la-cookie-httponly-con-curl): header `Set-Cookie`, marca `#HttpOnly_` en el archivo de cookies y reutilización entre login, `/current` y logout |
-| 5 | Faltaban tests automatizados | 30 tests de integración con `npm test` ([Tests automatizados](#tests-automatizados)), incluidos todos los casos de 401/403 sugeridos |
-| 7 | Faltaba el email al cancelar una inscripción | `mailService.sendTicketCancellation`, que se dispara al cancelar un ticket y aclara si lo canceló un admin ([Emails](#emails-nodemailer)) |
+| 3 | Mostrar cómo verificar la cookie HttpOnly con curl | Sección [Verificar la cookie HttpOnly con curl](docs/API.md#verificar-la-cookie-httponly-con-curl): header `Set-Cookie`, marca `#HttpOnly_` en el archivo de cookies y reutilización entre login, `/current` y logout |
+| 5 | Faltaban tests automatizados | Tests de integración con `npm test` ([Tests automatizados](#tests-automatizados)), incluidos todos los casos de 401/403 sugeridos |
+| 7 | Faltaba el email al cancelar una inscripción | `mailService.sendTicketCancellation`, que se dispara al cancelar un ticket y aclara si lo canceló un admin ([Emails](docs/API.md#emails-nodemailer)) |
+| 8 | Los criterios de DAO/Repository, DTOs y Services/Controllers quedaron sin una evaluación completa | **DTOs de entrada** (`src/dto/request/`) que filtran, validan y adaptan todo lo que llega a la API, además de los de salida (`src/dto/response/`). **Services con solo reglas de negocio** y controllers con solo HTTP. **EventRepository** arma las consultas de MongoDB, así ningún service usa sintaxis de Mongo. **Tests de arquitectura** que verifican las reglas de capas y **tests con dependencias falsas** que prueban el desacoplamiento. README reorganizado con la [arquitectura](#arquitectura) al principio y el detalle de la API en [`docs/API.md`](docs/API.md) |
+
+## Evidencia
+
+Las capturas de la API funcionando contra MongoDB Atlas, agrupadas por pre-entrega, están en [`docs/EVIDENCIA.md`](docs/EVIDENCIA.md).
