@@ -1,14 +1,9 @@
+import './env.js'
 import assert from 'node:assert/strict'
 import { mock } from 'node:test'
 import mongoose from 'mongoose'
 import { MongoMemoryServer } from 'mongodb-memory-server'
 import request from 'supertest'
-
-// Se definen antes de cargar la app: dotenv no pisa variables que ya existen, así
-// los tests nunca usan la base ni la cuenta de email configuradas en el .env real
-process.env.NODE_ENV = 'test'
-process.env.JWT_SECRET = 'secreto-solo-para-tests'
-process.env.MAIL_HOST = ''
 
 export const PASSWORD = 'Secreta123'
 
