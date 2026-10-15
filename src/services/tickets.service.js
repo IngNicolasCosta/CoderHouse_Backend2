@@ -2,7 +2,7 @@ import { ticketRepository } from '../repositories/tickets.repository.js'
 import { userRepository } from '../repositories/users.repository.js'
 import { eventsService } from './events.service.js'
 import { mailService } from './mail.service.js'
-import { TicketDTO } from '../dto/ticket.dto.js'
+import { TicketDTO } from '../dto/response/ticket.dto.js'
 import { EVENT_STATUS, TICKET_STATUS } from '../config/constants.js'
 import { canManageTicket } from '../config/permissions.js'
 import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
@@ -12,15 +12,6 @@ const DUPLICATE_KEY_ERROR = 11000
 const MAX_CODE_ATTEMPTS = 3
 
 const conflict = (message) => new AppError(message, 409)
-
-const parseQuantity = (value) => {
-  if (value === undefined) return 1
-  const quantity = typeof value === 'number' || (typeof value === 'string' && value.trim() !== '') ? Number(value) : NaN
-  if (!Number.isInteger(quantity) || quantity <= 0) {
-    throw new AppError('La cantidad debe ser un número entero mayor a 0', 400)
-  }
-  return quantity
-}
 
 const noSeatsError = (available, quantity) => conflict(available === 0
   ? 'No quedan cupos disponibles para este evento'
@@ -41,14 +32,19 @@ const assertEventOpen = (event) => {
   }
 }
 
-class TicketsService {
-  constructor (repository) {
+export class TicketsService {
+  // Dependencias inyectadas: repositories de tickets y usuarios, el service de
+  // eventos y el de emails (así se pueden reemplazar en los tests)
+  constructor (repository, { users, events, mail }) {
     this.repository = repository
+    this.users = users
+    this.events = events
+    this.mail = mail
   }
 
-  async createTicket (eventId, user, input = {}) {
-    const quantity = parseQuantity(input.quantity)
-    const event = await eventsService.getVisibleEvent(eventId, user)
+  // data: CreateTicketDTO (quantity ya validada)
+  async createTicket (eventId, user, { quantity }) {
+    const event = await this.events.getVisibleEvent(eventId, user)
     assertEventOpen(event)
 
     if (await this.repository.findActiveByUserAndEvent(user.id, event.id)) {
@@ -97,18 +93,18 @@ class TicketsService {
   // Los emails se envían en segundo plano: si el envío falla, la operación
   // (inscripción o cancelación) ya quedó hecha igual y el error se registra
   notifyUser (userId, sendEmail) {
-    userRepository.findById(userId)
+    this.users.findById(userId)
       .then((user) => sendEmail({ to: user.email, name: user.first_name }))
       .catch((error) => console.error('No se pudo enviar el email:', error.message))
   }
 
   notifyConfirmation (userId, event, ticket) {
-    this.notifyUser(userId, (recipient) => mailService.sendTicketConfirmation({ ...recipient, event, ticket }))
+    this.notifyUser(userId, (recipient) => this.mail.sendTicketConfirmation({ ...recipient, event, ticket }))
   }
 
   notifyCancellation (userId, event, ticket, cancelledByAdmin) {
     this.notifyUser(userId, (recipient) =>
-      mailService.sendTicketCancellation({ ...recipient, event, ticket, cancelledByAdmin }))
+      this.mail.sendTicketCancellation({ ...recipient, event, ticket, cancelledByAdmin }))
   }
 
   async findTicketOrFail (id) {
@@ -154,7 +150,7 @@ class TicketsService {
       throw conflict('La inscripción ya está cancelada')
     }
 
-    const event = await eventsService.findEventOrFail(ticket.event)
+    const event = await this.events.findEventOrFail(ticket.event)
     if (event.status === EVENT_STATUS.FINISHED || new Date(event.date) <= new Date()) {
       throw conflict('No se puede cancelar una inscripción de un evento que ya ocurrió')
     }
@@ -170,4 +166,8 @@ class TicketsService {
   }
 }
 
-export const ticketsService = new TicketsService(ticketRepository)
+export const ticketsService = new TicketsService(ticketRepository, {
+  users: userRepository,
+  events: eventsService,
+  mail: mailService
+})

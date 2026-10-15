@@ -1,9 +1,8 @@
 import { userRepository } from '../repositories/users.repository.js'
-import { CurrentUserDTO, UserDTO } from '../dto/user.dto.js'
+import { CurrentUserDTO, UserDTO } from '../dto/response/user.dto.js'
 import { ROLES } from '../config/permissions.js'
 import { createHash, isValidPassword } from '../utils/hash.js'
 import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
-import { normalizeEmail } from '../utils/validators.js'
 
 const DUPLICATE_KEY_ERROR = 11000
 
@@ -11,24 +10,22 @@ const DUPLICATE_KEY_ERROR = 11000
 // el tiempo de respuesta no revele si el usuario está registrado
 const DUMMY_PASSWORD_HASH = '$2b$10$Lcoc7i4TDjZadwqK/Wij5eeQM5AX0xmNNkwprgqN5gLyoKM/uk2IS'
 
-class SessionsService {
+export class SessionsService {
   constructor (repository) {
     this.repository = repository
   }
 
+  // data: RegisterUserDTO (email ya normalizado). El rol siempre es user
   async register ({ first_name, last_name, email, password }) {
-    const normalizedEmail = normalizeEmail(email)
-
-    const existingUser = await this.repository.findByEmail(normalizedEmail)
-    if (existingUser) {
+    if (await this.repository.findByEmail(email)) {
       throw new AppError(ERROR_MESSAGES.emailTaken, 409)
     }
 
     try {
       const newUser = await this.repository.createUser({
-        first_name: first_name.trim(),
-        last_name: last_name.trim(),
-        email: normalizedEmail,
+        first_name,
+        last_name,
+        email,
         password: await createHash(password),
         role: ROLES.USER
       })
@@ -42,8 +39,9 @@ class SessionsService {
     }
   }
 
+  // credentials: LoginDTO
   async validateCredentials ({ email, password }) {
-    const user = await this.repository.findByEmail(normalizeEmail(email))
+    const user = await this.repository.findByEmail(email)
     const passwordMatches = await isValidPassword(password, user?.password ?? DUMMY_PASSWORD_HASH)
 
     if (!user || !passwordMatches) {

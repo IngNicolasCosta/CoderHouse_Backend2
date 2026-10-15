@@ -5,7 +5,8 @@ import { config, authCookie } from './config.js'
 import { sessionsService } from '../services/sessions.service.js'
 import { AppError } from '../utils/errors.js'
 import { JWT_ALGORITHM } from '../utils/jwt.js'
-import { validateLoginData, validateRegisterData } from '../utils/validators.js'
+import { RegisterUserDTO } from '../dto/request/register-user.dto.js'
+import { LoginDTO } from '../dto/request/login.dto.js'
 
 // Los errores esperados (AppError) se informan como fallo de autenticación con su
 // mensaje y código; cualquier otro error se propaga como error interno
@@ -20,8 +21,7 @@ const localOptions = { usernameField: 'email', passReqToCallback: true }
 
 const registerStrategy = () => new LocalStrategy(localOptions, async (req, email, password, done) => {
   try {
-    validateRegisterData(req.body)
-    const user = await sessionsService.register(req.body)
+    const user = await sessionsService.register(new RegisterUserDTO(req.body))
     done(null, user)
   } catch (error) {
     failOrError(error, done)
@@ -30,8 +30,7 @@ const registerStrategy = () => new LocalStrategy(localOptions, async (req, email
 
 const loginStrategy = () => new LocalStrategy(localOptions, async (req, email, password, done) => {
   try {
-    validateLoginData(req.body)
-    const user = await sessionsService.validateCredentials(req.body)
+    const user = await sessionsService.validateCredentials(new LoginDTO(req.body))
     done(null, user)
   } catch (error) {
     failOrError(error, done)

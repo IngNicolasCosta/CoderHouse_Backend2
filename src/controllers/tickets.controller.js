@@ -1,7 +1,8 @@
 import { ticketsService } from '../services/tickets.service.js'
+import { CreateTicketDTO } from '../dto/request/create-ticket.dto.js'
 
 export const createTicket = async (req, res) => {
-  const ticket = await ticketsService.createTicket(req.params.eid, req.user, req.body)
+  const ticket = await ticketsService.createTicket(req.params.eid, req.user, new CreateTicketDTO(req.body))
   res.status(201).json({ status: 'success', payload: ticket })
 }
 

@@ -21,5 +21,8 @@ export const ERROR_MESSAGES = {
   ownRoleChange: 'No podés cambiar tu propio rol',
   ticketNotFound: 'Inscripción no encontrada',
   ticketForbidden: 'No tenés permisos para cancelar esta inscripción',
-  duplicateTicket: 'Ya tenés una inscripción activa a este evento'
+  duplicateTicket: 'Ya tenés una inscripción activa a este evento',
+  invalidCapacity: 'La capacidad debe ser un número entero mayor a 0',
+  invalidPrice: 'El precio debe ser un número mayor o igual a 0',
+  invalidQuantity: 'La cantidad debe ser un número entero mayor a 0'
 }

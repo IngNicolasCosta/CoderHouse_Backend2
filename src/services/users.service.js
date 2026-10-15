@@ -1,9 +1,8 @@
 import { userRepository } from '../repositories/users.repository.js'
-import { UserDTO } from '../dto/user.dto.js'
-import { ROLES } from '../config/permissions.js'
+import { UserDTO } from '../dto/response/user.dto.js'
 import { AppError, ERROR_MESSAGES } from '../utils/errors.js'
 
-class UsersService {
+export class UsersService {
   constructor (repository) {
     this.repository = repository
   }
@@ -13,11 +12,8 @@ class UsersService {
     return users.map((user) => new UserDTO(user))
   }
 
+  // role: viene de ChangeRoleDTO (ya es un rol válido)
   async changeRole (userId, role, requesterId) {
-    if (!Object.values(ROLES).includes(role)) {
-      throw new AppError(ERROR_MESSAGES.invalidRole, 400)
-    }
-
     if (userId === requesterId) {
       throw new AppError(ERROR_MESSAGES.ownRoleChange, 400)
     }
