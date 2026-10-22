@@ -11,6 +11,19 @@ Node.js · Express · MongoDB/Mongoose · Passport + JWT en cookie HttpOnly · N
 | [`docs/EVIDENCIA.md`](docs/EVIDENCIA.md) | Capturas de la API funcionando, por pre-entrega |
 | [`docs/postman/`](docs/postman) | Colección de Postman con el flujo completo de la entrega final |
 
+## Criterios de la entrega final
+
+| Criterio | Dónde está implementado | Cómo se verifica |
+|----------|-------------------------|------------------|
+| **Continuidad e integración** | Evolución de las 8 pre-entregas, cada una con su tag ([Entregas](#entregas)). Las correcciones recibidas se aplicaron encima ([Devoluciones aplicadas](#devoluciones-aplicadas)). Auth, roles, eventos, tickets y emails comparten las mismas capas, DTOs y manejo de errores | Flujo completo de punta a punta: [`final-flow.test.js`](tests/final-flow.test.js) y la [colección de Postman](#colección-de-postman) |
+| **Autenticación y seguridad** | Registro con bcrypt ([`sessions.service.js`](src/services/sessions.service.js), [`hash.js`](src/utils/hash.js)), JWT `{ id, email, role }` ([`jwt.js`](src/utils/jwt.js)) en cookie `currentUser` **HttpOnly**, `/current` con `CurrentUserDTO` (sin `password`) | [`auth.test.js`](tests/auth.test.js) y casos 1 y 9 del [flujo completo](#flujo-completo-verificado) |
+| **Tickets, cupos e inscripciones** | [`tickets.service.js`](src/services/tickets.service.js): valida evento, estado, fecha, duplicados y cupo. Los tickets cancelados no ocupan cupo y las inscripciones simultáneas no superan la capacidad | [`tickets.test.js`](tests/tickets.test.js) (incluye 8 inscripciones simultáneas con cupo 3) y casos 3 a 6 |
+| **Passport, roles y autorización** | Estrategias `register`, `login` y `current` en [`passport.config.js`](src/config/passport.config.js). `authenticate` (401) y `authorizeRoles` (403) con la matriz de [`permissions.js`](src/config/permissions.js). Propiedad de eventos y tickets en los services | [`authorization.test.js`](tests/authorization.test.js) y casos 2, 7 y 8 |
+| **Gestión de eventos** | Modelo [`Event`](src/models/Event.js) con `organizer` como referencia. CRUD + `PATCH /:id/status` (cancelar sin borrar). Validaciones de fecha, capacidad, precio, estados y organizador en [`events.service.js`](src/services/events.service.js). Filtros, paginación y orden | [`events.test.js`](tests/events.test.js) y caso 10 |
+| **Nodemailer** | Emails de **confirmación** y de **cancelación** de inscripción ([`mail.service.js`](src/services/mail.service.js)). Credenciales solo desde `MAIL_*` en el `.env` ([`mailer.config.js`](src/config/mailer.config.js)) | Mocks en `tickets.test.js` y `final-flow.test.js`, y [captura del email recibido](docs/EVIDENCIA.md#pre-entrega-7--inscripciones-y-cupos) |
+| **Arquitectura profesional** | Routes → controllers (solo HTTP) → services (negocio) → repositories → DAO → models, con DTOs de entrada y salida ([Arquitectura](#arquitectura)) | [`architecture.test.js`](tests/architecture.test.js) verifica las reglas de capas; [`unit.test.js`](tests/unit.test.js) prueba services con dependencias falsas |
+| **Documentación y calidad** | Este README (instalación, variables, ejecución, roles, endpoints, usuarios de prueba, ejemplos y forma de prueba), [`docs/API.md`](docs/API.md) y [`.env.example`](.env.example). `.env` y `node_modules` excluidos por [`.gitignore`](.gitignore) | `npm test` (57 tests) y [Seguridad del repositorio](#seguridad-del-repositorio) |
+
 ## Temática
 
 La plataforma gestiona torneos de vóley organizados en **ligas por división y rama**:
