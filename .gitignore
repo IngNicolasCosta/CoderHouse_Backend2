@@ -5,7 +5,7 @@ node_modules/
 *.pdf
 
 # Cookies guardadas al probar con curl
-cookies.txt
+cookies*.txt
 
 # Logs y archivos del sistema
 npm-debug.log*

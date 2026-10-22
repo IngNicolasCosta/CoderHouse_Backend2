@@ -9,6 +9,7 @@ Node.js · Express · MongoDB/Mongoose · Passport + JWT en cookie HttpOnly · N
 | **Este README** | Temática, arquitectura, instalación, uso, entregas y devoluciones |
 | [`docs/API.md`](docs/API.md) | Referencia completa de endpoints con ejemplos, reglas de negocio, roles, Passport y cómo probar |
 | [`docs/EVIDENCIA.md`](docs/EVIDENCIA.md) | Capturas de la API funcionando, por pre-entrega |
+| [`docs/postman/`](docs/postman) | Colección de Postman con el flujo completo de la entrega final |
 
 ## Temática
 
@@ -213,6 +214,7 @@ CoderHouse_Backend2/
 - cookie-parser (cookie de autenticación)
 - Nodemailer (emails de confirmación y cancelación de inscripción)
 - node:test + supertest + mongodb-memory-server (tests automatizados)
+- Postman (colección con el flujo completo)
 - dotenv
 - Bootstrap 5 (página de inicio)
 
@@ -263,7 +265,10 @@ npm run dev
 # producción
 npm start
 
-# asignar un rol a un usuario registrado (por ejemplo, el primer admin)
+# cargar usuarios y torneos de prueba
+npm run seed
+
+# asignar un rol a un usuario registrado
 npm run set-role -- admin@mail.com admin
 
 # tests automatizados (no necesitan .env ni MongoDB)
@@ -274,17 +279,25 @@ Con el servidor levantado, en `http://localhost:8080/` hay una página de inicio
 
 ### Usuarios de prueba
 
-El registro público siempre crea usuarios con rol `user`. Para probar los tres roles:
-
-1. Registrar tres usuarios desde `http://localhost:8080/` o con `POST /api/sessions/register`, por ejemplo `admin@mail.com`, `organizador@mail.com` y `jugadora@mail.com`.
-2. Asignar los roles desde la terminal:
-
 ```bash
-npm run set-role -- admin@mail.com admin
-npm run set-role -- organizador@mail.com organizer
+npm run seed
 ```
 
-Después, el admin también puede cambiar roles desde la API con `PATCH /api/users/:uid/role`.
+Crea estos usuarios en la base configurada en `MONGO_URL`. Todos tienen la contraseña **`Voley2026`**:
+
+| Rol | Email | Para probar |
+|-----|-------|-------------|
+| `admin` | `admin@ligavoley.test` | Ver usuarios, cambiar roles, modificar cualquier torneo |
+| `organizer` | `organizador@ligavoley.test` | Crear y gestionar sus torneos |
+| `organizer` | `organizadora@ligavoley.test` | Dueña del "Torneo de Primavera" (sirve para probar el 403 sobre un evento ajeno) |
+| `user` | `jugadora@ligavoley.test` | Inscribirse a torneos |
+| `user` | `jugador@ligavoley.test` | Ya ocupa el único cupo de la "Copa Relámpago" (sirve para probar la inscripción sin cupo) |
+
+También crea **11 torneos**: 10 publicados en distintas ligas (alcanzan para probar la paginación) y un borrador. El seed pasa por los mismos services y DTOs que la API, no envía emails y se puede correr varias veces sin duplicar datos.
+
+Para crear usuarios a mano: registrarlos con `POST /api/sessions/register` (siempre quedan como `user`) y asignar el rol con `npm run set-role -- <email> <user|organizer|admin>`. Un admin también puede cambiar roles con `PATCH /api/users/:uid/role`.
+
+> Los usuarios del seed tienen emails ficticios. Para **recibir el email de confirmación**, registrá un usuario con tu propio email (con `MAIL_*` configurado en el `.env`).
 
 ## Tests automatizados
 
@@ -292,13 +305,15 @@ Después, el admin también puede cambiar roles desde la API con `PATCH /api/use
 npm test
 ```
 
-Son **47 tests** hechos con `node:test` (el runner que trae Node). Los de integración usan `supertest` y hacen requests HTTP reales contra la app:
+Son **57 tests** hechos con `node:test` (el runner que trae Node). Los de integración usan `supertest` y hacen requests HTTP reales contra la app:
 
 - Cada archivo levanta su propio **MongoDB en memoria** (`mongodb-memory-server`). No hace falta `.env` ni conexión a Atlas, y no se toca ninguna base real.
 - Los **emails se reemplazan por mocks**: no se envía ningún mail, pero los tests verifican que se dispararon el de confirmación y el de cancelación.
+- La primera vez, `mongodb-memory-server` descarga el binario de MongoDB (unos 800 MB). Después queda en caché.
 
 | Archivo | Qué cubre |
 |---------|-----------|
+| [`final-flow.test.js`](tests/final-flow.test.js) | Los **10 casos del "Flujo completo a verificar"** de la entrega final, en orden |
 | [`architecture.test.js`](tests/architecture.test.js) | Reglas de capas leyendo los imports de `src/`: solo los DAO usan modelos y mongoose, los repositories usan su DAO, los services no usan DAO ni modelos, los controllers no usan modelos, DAO ni repositories |
 | [`unit.test.js`](tests/unit.test.js) | Sin base de datos: DTOs de entrada (filtrado, validación y adaptación), DTOs de salida sin datos sensibles (también con populate) y services/repositories con dependencias falsas en memoria |
 | [`auth.test.js`](tests/auth.test.js) | Registro sin `password` y con email normalizado, duplicado `409`, validaciones `400`, cookie `currentUser` HttpOnly, `/current` con `{ id, email, role }`, credenciales inválidas con mensaje genérico, logout → `401`, token manipulado → `401` |
@@ -336,6 +351,75 @@ Las rutas 🔒 responden **`401`** sin sesión y **`403`** con sesión pero sin 
 
 **Flujo de inscripción:** organizer crea un torneo publicado → user `POST /api/events/:eid/tickets` → se valida torneo, cupo y duplicados → ticket `confirmed` + email → `GET /api/tickets/my-tickets` → `PATCH /api/tickets/:tid/cancel` libera el cupo y envía un email de cancelación.
 
+## Ejemplos de uso
+
+Con `curl`, `-c` guarda la cookie de sesión y `-b` la envía (en Windows, `curl.exe` desde PowerShell). Más ejemplos y todos los errores posibles en [`docs/API.md`](docs/API.md).
+
+**Login como organizador y crear un torneo:**
+
+```bash
+curl -c cookies-org.txt -X POST http://localhost:8080/api/sessions/login -H "Content-Type: application/json" -d "{\"email\":\"organizador@ligavoley.test\",\"password\":\"Voley2026\"}"
+curl -b cookies-org.txt -X POST http://localhost:8080/api/events -H "Content-Type: application/json" -d "{\"title\":\"Copa Primavera\",\"description\":\"Fecha 1\",\"category\":\"A-femenino\",\"date\":\"2030-03-15T21:00:00Z\",\"location\":\"Club Ferro\",\"capacity\":12,\"price\":5000,\"status\":\"published\"}"
+```
+
+```json
+{ "status": "success", "payload": { "id": "6690…", "title": "Copa Primavera", "category": "A-femenino", "date": "2030-03-15T21:00:00.000Z", "location": "Club Ferro", "capacity": 12, "price": 5000, "status": "published", "organizer": "665f…" } }
+```
+
+**Listado paginado** (`GET /api/events?status=published&page=2&limit=5`):
+
+```json
+{ "status": "success", "data": [ { "id": "6690…", "title": "Liga de Ascenso C-femenino", "status": "published", "…": "…" } ], "page": 2, "limit": 5, "total": 10, "totalPages": 2 }
+```
+
+**Inscribirse como jugadora** (`POST /api/events/:eid/tickets`) → `201`, ticket confirmado y email de confirmación:
+
+```bash
+curl -c cookies-jug.txt -X POST http://localhost:8080/api/sessions/login -H "Content-Type: application/json" -d "{\"email\":\"jugadora@ligavoley.test\",\"password\":\"Voley2026\"}"
+curl -b cookies-jug.txt -X POST http://localhost:8080/api/events/<id del torneo>/tickets
+```
+
+```json
+{ "status": "success", "payload": { "id": "66a1…", "event": "6690…", "user": "665f…", "quantity": 1, "status": "confirmed", "reservationCode": "VOL-7QK2MX", "createdAt": "…", "cancelledAt": null } }
+```
+
+Un ticket `confirmed` es una **inscripción activa** (los estados son `pending`, `confirmed` y `cancelled`, ver [`docs/API.md`](docs/API.md#estados)).
+
+**Inscripción duplicada o sin cupo** → `409`:
+
+```json
+{ "status": "error", "message": "Ya tenés una inscripción activa a este evento" }
+{ "status": "error", "message": "No quedan cupos disponibles para este evento" }
+```
+
+## Colección de Postman
+
+[`docs/postman/liga-voley.postman_collection.json`](docs/postman/liga-voley.postman_collection.json) recorre los 10 casos del flujo completo, con **61 tests automáticos** (status, mensajes, cookie HttpOnly, cupos y ausencia de `password`):
+
+1. `npm run seed` y `npm run dev`.
+2. En Postman: **Import** → elegir el archivo de la colección.
+3. Revisar la variable `baseUrl` (por defecto `http://localhost:8080`).
+4. **Run collection** para correrla completa en orden. Postman guarda la cookie de sesión solo después de cada login.
+
+Para recibir el email de la inscripción, cambiar las variables `playerEmail` y `playerPassword` por las de un usuario registrado con tu email. La colección se puede correr varias veces seguidas.
+
+## Flujo completo verificado
+
+Los 10 casos de la consigna de la entrega final están cubiertos por el test [`final-flow.test.js`](tests/final-flow.test.js) y por la colección de Postman (una carpeta por caso):
+
+| # | Caso | Resultado |
+|---|------|-----------|
+| 1 | Registro → login → `/current` → logout → `/current` | `201` → `200` → `200` → `200` → `401` |
+| 2 | `user` intenta crear un evento | `403` |
+| 3 | `organizer` crea evento → `user` se inscribe → email → cupo descontado | `201` → `201` + email de confirmación → `availableSeats` baja en 1 |
+| 4 | `user` se inscribe de nuevo al mismo evento | `409` – Ya tenés una inscripción activa a este evento |
+| 5 | `user` se inscribe a un evento sin cupo | `409` – No quedan cupos disponibles para este evento |
+| 6 | `user` cancela su ticket → cupo liberado → nueva inscripción | `200` (`cancelled`) → `availableSeats` vuelve a subir → `201` |
+| 7 | `organizer` modifica un evento ajeno | `403` |
+| 8 | `admin` modifica el evento de otro organizador | `200` |
+| 9 | Respuestas de usuario, evento y ticket | Ninguna contiene `password` ni un hash |
+| 10 | `GET /api/events?status=published&page=2&limit=5` | `200` con `data`, `page`, `limit`, `total` y `totalPages` |
+
 ## Roles y permisos
 
 | Acción | `user` | `organizer` | `admin` |
@@ -371,6 +455,7 @@ Cada pre-entrega está marcada con un **tag de git** que apunta al commit exacto
 | 6 | Entidad events y lógica de negocio | `pre-entrega-6` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-6) |
 | 7 | Tickets, inscripciones y control de cupos | `pre-entrega-7` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-7) |
 | 8 | Arquitectura con DAO, Repository y DTO | `pre-entrega-8` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/pre-entrega-8) |
+| Final | API Backend plataforma de eventos | `entrega-final` | [código](https://github.com/IngNicolasCosta/CoderHouse_Backend2/tree/entrega-final) |
 
 Para ver una entrega en tu copia local:
 
