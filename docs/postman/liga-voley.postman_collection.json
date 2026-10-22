@@ -1,0 +1,1220 @@
+{
+  "info": {
+    "name": "Liga de Vóley API – Flujo completo (entrega final)",
+    "description": "Recorre los 10 casos del \"Flujo completo a verificar\" de la entrega final. Cada request tiene tests que validan la respuesta.\n\nAntes de correrla:\n1. `npm run seed` (crea los usuarios y torneos de prueba).\n2. `npm run dev` y revisar que `baseUrl` apunte al servidor.\n3. Para recibir el email de confirmación, registrá un usuario con tu email y poné ese email y su contraseña en `playerEmail` y `playerPassword`.\n\nPostman guarda la cookie `currentUser` sola después de cada login, por eso cada carpeta empieza logueando al usuario que corresponde.\nCorrer la colección completa en orden (Run collection).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "password",
+      "value": "Voley2026"
+    },
+    {
+      "key": "adminEmail",
+      "value": "admin@ligavoley.test"
+    },
+    {
+      "key": "organizerEmail",
+      "value": "organizador@ligavoley.test"
+    },
+    {
+      "key": "playerEmail",
+      "value": "jugadora@ligavoley.test"
+    },
+    {
+      "key": "playerPassword",
+      "value": "Voley2026"
+    },
+    {
+      "key": "newUserEmail",
+      "value": ""
+    },
+    {
+      "key": "eventId",
+      "value": ""
+    },
+    {
+      "key": "ticketId",
+      "value": ""
+    },
+    {
+      "key": "fullEventId",
+      "value": ""
+    },
+    {
+      "key": "foreignEventId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('responde 200', () => pm.response.to.have.status(200))"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "1. Registro → login → current → logout → current 401",
+      "description": "Flujo de autenticación con un usuario nuevo en cada corrida.",
+      "item": [
+        {
+          "name": "Registro de un usuario nuevo",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('newUserEmail', `postman.${Date.now()}@ligavoley.test`)"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 201', () => pm.response.to.have.status(201))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))",
+                  "pm.test('el rol del body se ignora: queda user', () => pm.expect(pm.response.json().payload.role).to.eql('user'))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Usuario\",\n  \"last_name\": \"Postman\",\n  \"email\": \"{{newUserEmail}}\",\n  \"password\": \"{{password}}\",\n  \"role\": \"admin\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('setea la cookie currentUser HttpOnly', () => pm.expect(pm.response.headers.get('Set-Cookie')).to.include('currentUser=').and.to.include('HttpOnly'))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{newUserEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Current con sesión",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))",
+                  "pm.test('devuelve solo id, email y role', () => pm.expect(Object.keys(pm.response.json().payload)).to.eql(['id', 'email', 'role']))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/current",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "current"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "logout"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Current después del logout",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 401', () => pm.response.to.have.status(401))",
+                  "pm.test('mensaje: No autenticado', () => pm.expect(pm.response.json().message).to.eql(\"No autenticado\"))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/current",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "current"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Un user intenta crear un evento → 403",
+      "description": "",
+      "item": [
+        {
+          "name": "Login como jugadora",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{playerEmail}}\",\n  \"password\": \"{{playerPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Crear evento como user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 403', () => pm.response.to.have.status(403))",
+                  "pm.test('mensaje: No tenés permisos para realizar esta acción', () => pm.expect(pm.response.json().message).to.eql(\"No tenés permisos para realizar esta acción\"))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"No debería crearse\",\n  \"description\": \"x\",\n  \"category\": \"A-femenino\",\n  \"date\": \"2030-01-01T21:00:00Z\",\n  \"location\": \"Club\",\n  \"capacity\": 10\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Organizer crea evento → user se inscribe → email → cupo descontado",
+      "description": "",
+      "item": [
+        {
+          "name": "Login como organizador",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{organizerEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Crear evento con cupo 2",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('eventDate', new Date(Date.now() + 20 * 86400000).toISOString())"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 201', () => pm.response.to.have.status(201))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))",
+                  "pm.collectionVariables.set('eventId', pm.response.json().payload.id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Copa Postman\",\n  \"description\": \"Torneo creado desde la colección\",\n  \"category\": \"B-femenino\",\n  \"date\": \"{{eventDate}}\",\n  \"location\": \"Club Ferro\",\n  \"capacity\": 2,\n  \"price\": 0,\n  \"status\": \"published\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Login como jugadora",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{playerEmail}}\",\n  \"password\": \"{{playerPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inscribirse al evento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 201', () => pm.response.to.have.status(201))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))",
+                  "pm.test('ticket confirmado con código de reserva', () => { const t = pm.response.json().payload; pm.expect(t.status).to.eql('confirmed'); pm.expect(t.reservationCode).to.match(/^VOL-/) })",
+                  "pm.collectionVariables.set('ticketId', pm.response.json().payload.id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "tickets"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Detalle del evento: cupo descontado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('queda 1 cupo disponible', () => pm.expect(pm.response.json().payload.availableSeats).to.eql(1))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Inscripción duplicada → 409",
+      "description": "",
+      "item": [
+        {
+          "name": "Inscribirse otra vez al mismo evento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 409', () => pm.response.to.have.status(409))",
+                  "pm.test('mensaje: Ya tenés una inscripción activa a este evento', () => pm.expect(pm.response.json().message).to.eql(\"Ya tenés una inscripción activa a este evento\"))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "tickets"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Inscripción a un evento sin cupo → error claro",
+      "description": "La Copa Relámpago del seed tiene cupo 1 y ya está ocupado.",
+      "item": [
+        {
+          "name": "Buscar \"Copa Relámpago\" y guardar su id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "const event = pm.response.json().data.find((e) => e.title === \"Copa Relámpago\")",
+                  "pm.test('existe (correr npm run seed antes)', () => pm.expect(event).to.be.an('object'))",
+                  "pm.collectionVariables.set('fullEventId', event.id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events?search=Copa%20Rel%C3%A1mpago",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "Copa%20Rel%C3%A1mpago"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inscribirse a la Copa Relámpago",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 409', () => pm.response.to.have.status(409))",
+                  "pm.test('mensaje: No quedan cupos disponibles para este evento', () => pm.expect(pm.response.json().message).to.eql(\"No quedan cupos disponibles para este evento\"))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{fullEventId}}/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{fullEventId}}",
+                "tickets"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Cancelar el ticket → cupo liberado → nueva inscripción",
+      "description": "",
+      "item": [
+        {
+          "name": "Cancelar mi ticket",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('queda cancelado con fecha', () => { const t = pm.response.json().payload; pm.expect(t.status).to.eql('cancelled'); pm.expect(t.cancelledAt).to.be.a('string') })"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/tickets/{{ticketId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "tickets",
+                "{{ticketId}}",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Detalle del evento: cupo liberado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('vuelven a quedar 2 cupos', () => pm.expect(pm.response.json().payload.availableSeats).to.eql(2))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inscribirse de nuevo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 201', () => pm.response.to.have.status(201))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "tickets"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Mis tickets",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))",
+                  "pm.test('incluye datos básicos del evento (populate)', () => pm.expect(pm.response.json().payload[0].event).to.have.all.keys('id', 'title', 'date', 'location', 'category', 'status'))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/tickets/my-tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "tickets",
+                "my-tickets"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Un organizer intenta modificar un evento ajeno → 403",
+      "description": "El Torneo de Primavera del seed es de otra organizadora.",
+      "item": [
+        {
+          "name": "Buscar \"Torneo de Primavera\" y guardar su id",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "const event = pm.response.json().data.find((e) => e.title === \"Torneo de Primavera\")",
+                  "pm.test('existe (correr npm run seed antes)', () => pm.expect(event).to.be.an('object'))",
+                  "pm.collectionVariables.set('foreignEventId', event.id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events?search=Torneo%20de%20Primavera",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "Torneo%20de%20Primavera"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Login como organizador",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{organizerEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Modificar evento ajeno",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 403', () => pm.response.to.have.status(403))",
+                  "pm.test('mensaje: No tenés permisos para modificar este evento', () => pm.expect(pm.response.json().message).to.eql(\"No tenés permisos para modificar este evento\"))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Intento de cambio\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{foreignEventId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{foreignEventId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. El admin modifica el evento de otro organizador → 200",
+      "description": "",
+      "item": [
+        {
+          "name": "Login como admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Modificar evento ajeno como admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))",
+                  "pm.test('se guardó el cambio', () => pm.expect(pm.response.json().payload.location).to.eql('Club Náutico Hacoaj'))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"location\": \"Club Náutico Hacoaj\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{foreignEventId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{foreignEventId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "9. Respuestas sin password",
+      "description": "Usuario, evento y ticket (también con populate).",
+      "item": [
+        {
+          "name": "Listado de usuarios (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "users"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inscriptos de un evento (populate del usuario)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))",
+                  "pm.test('el usuario trae solo datos públicos', () => pm.expect(pm.response.json().payload[0].user).to.have.all.keys('id', 'first_name', 'last_name', 'email'))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}",
+                "tickets"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Detalle de evento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events/{{eventId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events",
+                "{{eventId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Current del admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "pm.test('no expone password ni hashes', () => pm.expect(pm.response.text()).to.not.match(/password|\\$2[aby]\\$/))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/sessions/current",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sessions",
+                "current"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "10. Listado paginado",
+      "description": "",
+      "item": [
+        {
+          "name": "Eventos publicados, página 2 de a 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responde 200', () => pm.response.to.have.status(200))",
+                  "const body = pm.response.json()",
+                  "pm.test('estructura data, page, limit, total, totalPages', () => pm.expect(body).to.have.all.keys('status', 'data', 'page', 'limit', 'total', 'totalPages'))",
+                  "pm.test('page 2 y limit 5', () => { pm.expect(body.page).to.eql(2); pm.expect(body.limit).to.eql(5) })",
+                  "pm.test('totalPages coincide con total', () => pm.expect(body.totalPages).to.eql(Math.ceil(body.total / 5)))",
+                  "pm.test('como máximo 5 resultados', () => pm.expect(body.data.length).to.be.at.most(5))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/events?status=published&page=2&limit=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "published"
+                },
+                {
+                  "key": "page",
+                  "value": "2"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
