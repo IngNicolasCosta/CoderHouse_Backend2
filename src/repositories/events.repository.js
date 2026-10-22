@@ -27,6 +27,10 @@ export class EventRepository {
     return this.dao.findById(id)
   }
 
+  findByTitle (title) {
+    return this.dao.findOne({ title })
+  }
+
   // Listado paginado. _id desempata el orden para que la paginación sea estable
   async findPaginated (criteria, { sort, page, limit }) {
     const filter = buildFilter(criteria)
